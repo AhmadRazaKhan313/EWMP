@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import apiClient from "@shared/api-client";
+import type { BreakType } from "@shared/deviceTypes";
 
 export interface WorkSession {
   id: string;
@@ -10,6 +11,12 @@ export interface WorkSession {
   total_minutes: number | null;
 }
 
+export interface BreakRecordSummary {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+}
+
 export const workSessionService = {
   getActive: async (): Promise<WorkSession | null> =>
     (await apiClient.get<WorkSession | null>("/work-sessions/me/active")).data,
@@ -17,10 +24,17 @@ export const workSessionService = {
     (await apiClient.post<WorkSession>("/work-sessions/start")).data,
   end: async (id: string): Promise<WorkSession> =>
     (await apiClient.post<WorkSession>(`/work-sessions/${id}/end`)).data,
-  startBreak: async (id: string): Promise<{ status: string }> =>
-    (await apiClient.post<{ status: string }>(`/work-sessions/${id}/break/start`, {})).data,
+  // breakTypeId omitted (undefined) -> backend receives break_type_id: null,
+  // i.e. the plain "quick pause" from Phase 4 — this endpoint's contract
+  // hasn't changed, Phase 5 just adds an optional category on top of it.
+  startBreak: async (id: string, breakTypeId?: string): Promise<{ status: string }> =>
+    (await apiClient.post<{ status: string }>(`/work-sessions/${id}/break/start`, { break_type_id: breakTypeId ?? null })).data,
   endBreak: async (id: string): Promise<{ status: string }> =>
     (await apiClient.post<{ status: string }>(`/work-sessions/${id}/break/end`)).data,
+  getBreakTypes: async (): Promise<BreakType[]> =>
+    (await apiClient.get<{ items: BreakType[] }>("/work-sessions/break-types")).data.items,
+  listBreaks: async (sessionId: string): Promise<BreakRecordSummary[]> =>
+    (await apiClient.get<{ items: BreakRecordSummary[] }>(`/work-sessions/${sessionId}/breaks`)).data.items,
 };
 
 interface TimerState {
@@ -29,11 +43,15 @@ interface TimerState {
   startedAt: number | null; // epoch ms — server truth, timer re-derives elapsed from this, never a local counter
   elapsedSeconds: number;
   error: string | null;
+  breakTypes: BreakType[];
+  todaysBreaks: BreakRecordSummary[];
   init: () => Promise<void>;
   checkIn: () => Promise<void>;
   checkOut: () => Promise<void>;
-  startBreak: () => Promise<void>;
+  startBreak: (breakTypeId?: string) => Promise<void>;
   endBreak: () => Promise<void>;
+  loadBreakTypes: () => Promise<void>;
+  refreshBreaks: () => Promise<void>;
   _tick: () => void;
 }
 
@@ -47,6 +65,8 @@ export const useTimerStore = create<TimerState>((set, get) => ({
   startedAt: null,
   elapsedSeconds: 0,
   error: null,
+  breakTypes: [],
+  todaysBreaks: [],
 
   // Re-derives from the server on every boot (Phase 4 DoD: timer survives
   // restart, never jumps/resets) — the server's started_at is the single
@@ -62,12 +82,14 @@ export const useTimerStore = create<TimerState>((set, get) => ({
           elapsedSeconds: secondsSince(session.started_at),
           error: null,
         });
+        void get().refreshBreaks();
       } else {
-        set({ status: "idle", sessionId: null, startedAt: null, elapsedSeconds: 0 });
+        set({ status: "idle", sessionId: null, startedAt: null, elapsedSeconds: 0, todaysBreaks: [] });
       }
     } catch {
       set({ status: "idle" });
     }
+    void get().loadBreakTypes();
   },
 
   checkIn: async (): Promise<void> => {
@@ -79,6 +101,7 @@ export const useTimerStore = create<TimerState>((set, get) => ({
         sessionId: session.id,
         startedAt: new Date(session.started_at).getTime(),
         elapsedSeconds: secondsSince(session.started_at),
+        todaysBreaks: [],
       });
     } catch (err) {
       // Backend returns 409 once today's session is already ended — surface
@@ -99,7 +122,7 @@ export const useTimerStore = create<TimerState>((set, get) => ({
     set({ error: null });
     try {
       await workSessionService.end(sessionId);
-      set({ status: "idle", sessionId: null, startedAt: null, elapsedSeconds: 0 });
+      set({ status: "idle", sessionId: null, startedAt: null, elapsedSeconds: 0, todaysBreaks: [] });
     } catch (err) {
       set({ error: err instanceof Error ? err.message : "Check-out failed" });
     }
@@ -107,13 +130,16 @@ export const useTimerStore = create<TimerState>((set, get) => ({
 
   // Pauses the SAME session (status -> on_break) rather than ending it, so
   // one day = one attendance record no matter how many breaks are taken.
-  startBreak: async (): Promise<void> => {
+  // breakTypeId is optional (Phase 5 picker) — omitted entirely, this is
+  // still Phase 4's plain "quick pause", unchanged.
+  startBreak: async (breakTypeId?: string): Promise<void> => {
     const { sessionId } = get();
     if (!sessionId) return;
     set({ error: null });
     try {
-      await workSessionService.startBreak(sessionId);
+      await workSessionService.startBreak(sessionId, breakTypeId);
       set({ status: "on_break" });
+      void get().refreshBreaks();
     } catch (err) {
       set({ error: err instanceof Error ? err.message : "Could not start break" });
     }
@@ -126,8 +152,35 @@ export const useTimerStore = create<TimerState>((set, get) => ({
     try {
       await workSessionService.endBreak(sessionId);
       set({ status: "active" });
+      void get().refreshBreaks();
     } catch (err) {
       set({ error: err instanceof Error ? err.message : "Could not resume from break" });
+    }
+  },
+
+  // Fetched once per app session (org-wide, rarely changes) rather than
+  // on every render — cheap to call defensively from init(), a no-op
+  // network-wise if it 404s/fails on an older backend without this
+  // endpoint yet (fails open to an empty list: the picker then just
+  // isn't shown, same as an org with zero configured categories).
+  loadBreakTypes: async (): Promise<void> => {
+    try {
+      const breakTypes = await workSessionService.getBreakTypes();
+      set({ breakTypes });
+    } catch {
+      set({ breakTypes: [] });
+    }
+  },
+
+  refreshBreaks: async (): Promise<void> => {
+    const { sessionId } = get();
+    if (!sessionId) return;
+    try {
+      const todaysBreaks = await workSessionService.listBreaks(sessionId);
+      set({ todaysBreaks });
+    } catch {
+      // History list is a nicety, not load-bearing — leave stale data
+      // rather than surfacing an error for a background refresh.
     }
   },
 

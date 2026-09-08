@@ -27,9 +27,6 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
 
-const isDev = is.dev;
-const RENDERER_URL = process.env["ELECTRON_RENDERER_URL"];
-
 // Some machines (older/virtual GPU drivers, remote desktop sessions, some
 // laptops with hybrid graphics) fail to initialize Chromium's GPU process.
 // That shows up as a persistent black/white blank window with nothing
@@ -37,6 +34,9 @@ const RENDERER_URL = process.env["ELECTRON_RENDERER_URL"];
 // avoids that entire class of failure; this app has no need for GPU-heavy
 // rendering anyway.
 app.disableHardwareAcceleration();
+
+const isDev = is.dev;
+const RENDERER_URL = process.env["ELECTRON_RENDERER_URL"];
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({

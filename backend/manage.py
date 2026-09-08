@@ -8,6 +8,7 @@ Usage:
     python manage.py seed --all           # Seed everything
 """
 
+import utils.session
 import asyncio
 import argparse
 import sys

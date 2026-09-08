@@ -1,13 +1,13 @@
 {
   "name": "ewmp-desktop-agent",
   "version": "0.1.0",
-  "description": "EWMP employee desktop app — timer, attendance, breaks, profile. Talks to the same backend as the web dashboard.",
+  "description": "EWMP employee desktop app \u2014 timer, attendance, breaks, profile. Talks to the same backend as the web dashboard.",
   "main": "./out/main/index.js",
   "author": "EWMP",
   "private": true,
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "node init && electron-vite dev",
+    "build": "node init && electron-vite build",
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
@@ -15,9 +15,9 @@
     "lint": "eslint . --ext .ts,.tsx",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build:win": "npm run build && electron-builder --win",
-    "build:mac": "npm run build && electron-builder --mac",
-    "build:linux": "npm run build && electron-builder --linux"
+    "build:win": "node init && npm run build && electron-builder --win",
+    "build:mac": "node init && npm run build && electron-builder --mac",
+    "build:linux": "node init && npm run build && electron-builder --linux"
   },
   "dependencies": {
     "@electron-toolkit/utils": "^3.0.0",
