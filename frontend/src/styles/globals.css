@@ -1,0 +1,118 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 0 0% 100%;
+  --background-subtle: 0 0% 98%;
+  --foreground: 240 10% 3.9%;
+  --foreground-subtle: 240 3.7% 34%;
+  --foreground-muted: 240 5% 55%;
+  --primary: 243 75% 59%;
+  --primary-foreground: 0 0% 100%;
+  --primary-hover: 245 58% 51%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --secondary-hover: 240 4.8% 91%;
+  --accent: 226 100% 97%;
+  --accent-foreground: 243 75% 59%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --success: 142 71% 45%;
+  --success-subtle: 142 71% 95%;
+  --warning: 38 92% 50%;
+  --warning-subtle: 38 92% 95%;
+  --info: 217 91% 60%;
+  --info-subtle: 217 91% 95%;
+  --border: 240 5.9% 90%;
+  --border-strong: 240 5.9% 82%;
+  --input: 240 5.9% 90%;
+  --ring: 243 75% 59%;
+  --sidebar-background: 243 47% 11%;
+  --sidebar-foreground: 235 30% 85%;
+  --sidebar-muted: 235 20% 60%;
+  --sidebar-active: 243 40% 20%;
+  --sidebar-hover: 243 40% 15%;
+  --sidebar-border: 243 30% 16%;
+  --status-active-bg: 142 71% 95%;
+  --status-active-fg: 142 71% 28%;
+  --status-error-bg: 0 84% 96%;
+  --status-error-fg: 0 70% 38%;
+  --status-warning-bg: 38 92% 95%;
+  --status-warning-fg: 38 80% 35%;
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.06);
+  --shadow-md: 0 10px 15px -3px rgb(0 0 0 / 0.06);
+}
+
+.dark {
+  --background: 240 10% 3.9%;
+  --background-subtle: 240 10% 5.5%;
+  --foreground: 0 0% 98%;
+  --foreground-subtle: 240 5% 64.9%;
+  --foreground-muted: 240 4% 45%;
+  --primary: 239 84% 67%;
+  --primary-foreground: 240 10% 3.9%;
+  --primary-hover: 243 75% 72%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --accent: 243 30% 18%;
+  --accent-foreground: 239 84% 80%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --border: 240 3.7% 15.9%;
+  --border-strong: 240 3.7% 22%;
+  --ring: 239 84% 67%;
+  --sidebar-background: 243 47% 8%;
+  --sidebar-foreground: 235 30% 80%;
+  --sidebar-muted: 235 20% 50%;
+  --sidebar-active: 243 40% 16%;
+  --sidebar-hover: 243 40% 12%;
+  --sidebar-border: 243 30% 13%;
+}
+
+* {
+  border-color: hsl(var(--border));
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--background-subtle)) 50%,
+    hsl(var(--muted)) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-dot-pulse {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+.sidebar-scroll {
+  scrollbar-width: none;       /* Firefox */
+  -ms-overflow-style: none;    /* IE/Edge legacy */
+}
+.sidebar-scroll::-webkit-scrollbar {
+  display: none;               /* Chrome, Safari, Edge (Chromium) */
+}
