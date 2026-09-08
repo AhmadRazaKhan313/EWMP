@@ -1,0 +1,68 @@
+# ── Secrets — NEVER commit these ─────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── Python / FastAPI backend ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# STORAGE_BACKEND=local writes real employee documents/uploads here —
+# actual PII, never belongs in git regardless of which backend subfolder
+# it lives under.
+storage/uploads/
+storage/
+
+# Celery (CELERY_BROKER_URL / CELERY_RESULT_BACKEND use Redis, but a local
+# Celery beat schedule file is created on disk regardless).
+celerybeat-schedule
+celerybeat.pid
+
+# Local Redis/Postgres dump files, if anyone ever runs them locally next
+# to the project instead of in Docker.
+*.rdb
+*.sql
+*.dump
+
+# ── Node / Next.js frontend ────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Electron desktop app ───────────────────────────────────────────────────
+desktop-app/out/
+desktop-app/dist/
+desktop-app/node_modules/
+desktop-app/.electron-vite/
+
+# ── Standalone silent agent — kept locally as a backup, not needed in the
+# repo right now (all device tracking currently goes through desktop-app's
+# self-enrollment on employee login instead). Remove this line later if it
+# ends up being needed again.
+/agent/
+
+# ── OS / Editor junk ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log

@@ -1,0 +1,61 @@
+# ── Web Framework ──────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+python-multipart>=0.0.12
+
+# ── Database ────────────────────────────────────────────────────
+sqlalchemy>=2.0.35
+alembic>=1.13.3
+psycopg2-binary>=2.9.9
+asyncpg>=0.30.0
+
+# ── Validation / Settings ────────────────────────────────────────
+pydantic>=2.9.2
+pydantic-settings>=2.5.2
+pydantic[email]>=2.9.2
+
+# ── Auth ─────────────────────────────────────────────────────────
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+# passlib 1.7.4 (latest release) detects the bcrypt backend version via
+# `bcrypt.__about__.__version__`, which bcrypt removed in 4.1+. From 4.1
+# through 4.3 this only logs a harmless "(trapped) error reading bcrypt
+# version" warning on every hash/verify call, but bcrypt 5.0.0 changes its
+# own 72-byte password handling in a way passlib can no longer detect,
+# so hash_password()/verify_password() raise
+# `ValueError: password cannot be longer than 72 bytes` instead of passlib
+# truncating transparently as it's meant to. Pin below 5.0 until passlib
+# ships a fix for this. See tests/test_bcrypt_long_password.py.
+bcrypt>=4.0.0,<5.0.0
+
+# ── Async / Background ───────────────────────────────────────────
+celery>=5.4.0
+redis>=5.1.1
+aiofiles>=24.1.0
+
+# ── Storage ──────────────────────────────────────────────────────
+boto3>=1.35.36
+
+# ── HTTP Client ──────────────────────────────────────────────────
+httpx>=0.27.2
+
+# ── AI Providers ─────────────────────────────────────────────────
+openai>=1.51.2
+anthropic>=0.36.1
+google-generativeai>=0.8.2
+
+# ── Utilities ─────────────────────────────────────────────────────
+python-slugify>=8.0.4
+pillow>=10.4.0
+openpyxl>=3.1.5
+reportlab>=4.2.5
+jinja2>=3.1.4
+python-dateutil>=2.9.0.post0
+pytz>=2024.2
+
+# ── Testing ───────────────────────────────────────────────────────
+pytest>=8.3.3
+pytest-asyncio>=0.24.0
+factory-boy>=3.3.1
+aiosqlite>=0.20.0  # in-memory async DB for ORM-mechanics tests (relationship cascades, etc.) that a mocked session can't exercise realistically
+filetype>=1.2.0  # magic-byte content sniffing for document uploads — never trust the client-supplied Content-Type header
