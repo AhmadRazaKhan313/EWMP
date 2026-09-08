@@ -1,0 +1,27 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.web.json",
+  "include": [
+    "src/renderer/src/**/*",
+    "src/renderer/src/**/*.tsx",
+    "src/preload/index.d.ts",
+    "src/shared/ipcChannels.ts",
+    "src/shared/api-client.ts",
+    "src/shared/offlineQueue.ts",
+    "src/shared/__tests__/**/*",
+    "vitest.setup.ts"
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "strict": true,
+    "moduleResolution": "bundler",
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "jsx": "react-jsx",
+    "types": ["vitest/globals", "@testing-library/jest-dom"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/renderer/src/*"],
+      "@shared/*": ["src/shared/*"]
+    }
+  }
+}

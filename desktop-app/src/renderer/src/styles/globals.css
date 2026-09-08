@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens mirrored from frontend/src/styles/globals.css — keep these
+   two files in sync manually; there's no shared package between the two
+   apps (yet) to enforce it automatically. */
+:root {
+  --background: 0 0% 100%;
+  --background-subtle: 0 0% 98%;
+  --foreground: 240 10% 3.9%;
+  --foreground-subtle: 240 3.7% 34%;
+  --foreground-muted: 240 5% 55%;
+  --primary: 243 75% 59%;
+  --primary-foreground: 0 0% 100%;
+  --primary-hover: 245 58% 51%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --secondary-hover: 240 4.8% 91%;
+  --accent: 226 100% 97%;
+  --accent-foreground: 243 75% 59%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --success: 142 71% 45%;
+  --success-subtle: 142 71% 95%;
+  --warning: 38 92% 50%;
+  --warning-subtle: 38 92% 95%;
+  --info: 217 91% 60%;
+  --info-subtle: 217 91% 95%;
+  --border: 240 5.9% 90%;
+  --border-strong: 240 5.9% 82%;
+  --input: 240 5.9% 90%;
+  --ring: 243 75% 59%;
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.06);
+  --shadow-md: 0 10px 15px -3px rgb(0 0 0 / 0.06);
+}
+
+.dark {
+  --background: 240 10% 3.9%;
+  --background-subtle: 240 10% 5.5%;
+  --foreground: 0 0% 98%;
+  --foreground-subtle: 240 5% 64.9%;
+  --foreground-muted: 240 4% 45%;
+  --primary: 239 84% 67%;
+  --primary-foreground: 240 10% 3.9%;
+  --primary-hover: 243 75% 72%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --accent: 243 30% 18%;
+  --accent-foreground: 239 84% 80%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --border: 240 3.7% 15.9%;
+  --border-strong: 240 3.7% 22%;
+  --ring: 239 84% 67%;
+}
+
+* {
+  border-color: hsl(var(--border));
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  overflow: hidden; /* fixed-size app window, not a scrollable web page */
+}
+
+#root {
+  height: 100vh;
+  width: 100vw;
+}

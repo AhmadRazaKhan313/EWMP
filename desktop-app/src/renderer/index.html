@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- CSP is intentionally NOT set here. A static meta tag can't tell
+         dev mode from production, and a CSP meta tag combines with the
+         response-header CSP by taking the stricter value per directive —
+         so a meta tag written for production (no 'unsafe-inline'/'unsafe-eval')
+         silently blocks Vite's dev-mode React Fast Refresh preamble script
+         even though main/index.ts's header correctly allows it in dev.
+         main/index.ts's session.defaultSession.webRequest.onHeadersReceived
+         is the single source of truth for CSP, for both dev-server-loaded
+         and packaged file:// content — see the comment there. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EWMP</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

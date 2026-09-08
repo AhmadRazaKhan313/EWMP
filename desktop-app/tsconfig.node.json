@@ -1,0 +1,22 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
+  "include": [
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/shared/ipcChannels.ts",
+    "src/shared/secureStore.ts",
+    "electron.vite.config.ts"
+  ],
+  "compilerOptions": {
+    "composite": true,
+    "strict": true,
+    "moduleResolution": "bundler",
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "types": ["electron-vite/node"],
+    "baseUrl": ".",
+    "paths": {
+      "@shared/*": ["src/shared/*"]
+    }
+  }
+}
