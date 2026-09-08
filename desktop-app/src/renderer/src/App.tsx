@@ -77,3 +77,4 @@ function StartingScreen(): JSX.Element {
     </div>
   );
 }
+

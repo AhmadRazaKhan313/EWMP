@@ -1,6 +1,4 @@
 # ── Secrets — NEVER commit these ─────────────────────────────────────────
-.env
-.env.*
 !.env.example
 *.pem
 *.key
@@ -63,6 +61,6 @@ desktop-app/.electron-vite/
 # ── OS / Editor junk ────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-.vscode/
 .idea/
 *.log
+config.bat
