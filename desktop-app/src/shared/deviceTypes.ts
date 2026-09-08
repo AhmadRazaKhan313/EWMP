@@ -11,6 +11,14 @@ export type DeviceOsType = "windows" | "linux" | "macos" | "android" | "ios" | "
  * without a cross-process relative import. */
 export type TrayIconStatus = "idle" | "active" | "on_break";
 
+/** GET /work-sessions/break-types item shape (Phase 5). */
+export interface BreakType {
+  id: string;
+  name: string;
+  is_paid: boolean;
+  max_minutes: number | null;
+}
+
 export interface HardwareInfo {
   hostname: string;
   os_type: DeviceOsType;

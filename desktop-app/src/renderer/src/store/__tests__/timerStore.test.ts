@@ -4,7 +4,10 @@ import { useTimerStore, workSessionService, formatElapsed } from "../timerStore"
 vi.mock("@shared/api-client", () => ({ default: { get: vi.fn(), post: vi.fn() } }));
 
 function reset(): void {
-  useTimerStore.setState({ status: "loading", sessionId: null, startedAt: null, elapsedSeconds: 0, error: null });
+  useTimerStore.setState({
+    status: "loading", sessionId: null, startedAt: null, elapsedSeconds: 0, error: null,
+    breakTypes: [], todaysBreaks: [],
+  });
 }
 
 describe("formatElapsed", () => {
@@ -99,6 +102,24 @@ describe("timerStore.startBreak / endBreak", () => {
     expect(state.sessionId).toBe("s1"); // same session — break pauses, doesn't end
   });
 
+  it("passes a break_type_id through to the backend when a category is picked (Phase 5)", async () => {
+    useTimerStore.setState({ status: "active", sessionId: "s1", startedAt: Date.now(), elapsedSeconds: 0 });
+    const spy = vi.spyOn(workSessionService, "startBreak").mockResolvedValue({ status: "on_break" });
+
+    await useTimerStore.getState().startBreak("bt-lunch");
+
+    expect(spy).toHaveBeenCalledWith("s1", "bt-lunch");
+  });
+
+  it("omits the break_type_id for a plain quick pause (Phase 4 behavior unchanged)", async () => {
+    useTimerStore.setState({ status: "active", sessionId: "s1", startedAt: Date.now(), elapsedSeconds: 0 });
+    const spy = vi.spyOn(workSessionService, "startBreak").mockResolvedValue({ status: "on_break" });
+
+    await useTimerStore.getState().startBreak();
+
+    expect(spy).toHaveBeenCalledWith("s1", undefined);
+  });
+
   it("endBreak resumes to active", async () => {
     useTimerStore.setState({ status: "on_break", sessionId: "s1", startedAt: Date.now() - 5000, elapsedSeconds: 5 });
     vi.spyOn(workSessionService, "endBreak").mockResolvedValue({ status: "active" });
@@ -122,5 +143,74 @@ describe("timerStore.startBreak / endBreak", () => {
 
     expect(useTimerStore.getState().error).toBe("session already ended");
     expect(useTimerStore.getState().status).toBe("active"); // stays active, doesn't fake a break
+  });
+});
+
+describe("timerStore.loadBreakTypes", () => {
+  beforeEach(() => { vi.clearAllMocks(); reset(); });
+
+  it("populates breakTypes from the backend", async () => {
+    vi.spyOn(workSessionService, "getBreakTypes").mockResolvedValue([
+      { id: "bt1", name: "Lunch", is_paid: false, max_minutes: 60 },
+    ]);
+    await useTimerStore.getState().loadBreakTypes();
+    expect(useTimerStore.getState().breakTypes).toEqual([{ id: "bt1", name: "Lunch", is_paid: false, max_minutes: 60 }]);
+  });
+
+  it("fails open to an empty list on an older backend / network error", async () => {
+    vi.spyOn(workSessionService, "getBreakTypes").mockRejectedValue(new Error("404"));
+    await useTimerStore.getState().loadBreakTypes();
+    expect(useTimerStore.getState().breakTypes).toEqual([]);
+  });
+});
+
+describe("timerStore.refreshBreaks", () => {
+  beforeEach(() => { vi.clearAllMocks(); reset(); });
+
+  it("populates todaysBreaks for the current session", async () => {
+    useTimerStore.setState({ sessionId: "s1" });
+    vi.spyOn(workSessionService, "listBreaks").mockResolvedValue([
+      { id: "b1", started_at: new Date().toISOString(), ended_at: null },
+    ]);
+    await useTimerStore.getState().refreshBreaks();
+    expect(useTimerStore.getState().todaysBreaks).toHaveLength(1);
+  });
+
+  it("is a no-op with no active session", async () => {
+    const spy = vi.spyOn(workSessionService, "listBreaks");
+    await useTimerStore.getState().refreshBreaks(); // sessionId is null after reset()
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("leaves stale data rather than throwing on a background-refresh failure", async () => {
+    useTimerStore.setState({ sessionId: "s1", todaysBreaks: [{ id: "old", started_at: "x", ended_at: "y" }] });
+    vi.spyOn(workSessionService, "listBreaks").mockRejectedValue(new Error("network blip"));
+    await useTimerStore.getState().refreshBreaks();
+    expect(useTimerStore.getState().todaysBreaks).toEqual([{ id: "old", started_at: "x", ended_at: "y" }]);
+  });
+});
+
+describe("timerStore clears todaysBreaks across check-in/check-out cycles", () => {
+  beforeEach(() => { vi.clearAllMocks(); reset(); });
+
+  it("checkIn resets todaysBreaks from a previous cycle", async () => {
+    useTimerStore.setState({ todaysBreaks: [{ id: "stale", started_at: "x", ended_at: "y" }] });
+    vi.spyOn(workSessionService, "start").mockResolvedValue({
+      id: "s1", employee_id: "e1", started_at: new Date().toISOString(), ended_at: null, status: "active", total_minutes: null,
+    });
+    await useTimerStore.getState().checkIn();
+    expect(useTimerStore.getState().todaysBreaks).toEqual([]);
+  });
+
+  it("checkOut clears todaysBreaks", async () => {
+    useTimerStore.setState({
+      status: "active", sessionId: "s1", startedAt: Date.now(),
+      todaysBreaks: [{ id: "b1", started_at: "x", ended_at: "y" }],
+    });
+    vi.spyOn(workSessionService, "end").mockResolvedValue({
+      id: "s1", employee_id: "e1", started_at: "", ended_at: new Date().toISOString(), status: "ended", total_minutes: 5,
+    });
+    await useTimerStore.getState().checkOut();
+    expect(useTimerStore.getState().todaysBreaks).toEqual([]);
   });
 });
