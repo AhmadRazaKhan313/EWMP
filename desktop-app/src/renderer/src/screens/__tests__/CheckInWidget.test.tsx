@@ -5,7 +5,10 @@ import CheckInWidget from "../CheckInWidget";
 import { useTimerStore, workSessionService } from "../../store/timerStore";
 
 function reset(): void {
-  useTimerStore.setState({ status: "loading", sessionId: null, startedAt: null, elapsedSeconds: 0, error: null });
+  useTimerStore.setState({
+    status: "loading", sessionId: null, startedAt: null, elapsedSeconds: 0, error: null,
+    breakTypes: [], todaysBreaks: [],
+  });
 }
 
 describe("CheckInWidget", () => {
@@ -142,5 +145,124 @@ describe("CheckInWidget", () => {
     await user.click(await screen.findByTestId("checkin-button"));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/already checked out for today/);
+  });
+
+  describe("Phase 5 — break type picker", () => {
+    it("clicking Take Break opens a picker when the org has configured break types", async () => {
+      vi.spyOn(workSessionService, "getActive").mockResolvedValue({
+        id: "s1", employee_id: "e1", started_at: new Date().toISOString(), ended_at: null, status: "active", total_minutes: null,
+      });
+      vi.spyOn(workSessionService, "getBreakTypes").mockResolvedValue([
+        { id: "bt-lunch", name: "Lunch", is_paid: false, max_minutes: 60 },
+        { id: "bt-coffee", name: "Coffee", is_paid: true, max_minutes: null },
+      ]);
+      render(<CheckInWidget />);
+      const user = userEvent.setup();
+
+      await waitFor(() => expect(useTimerStore.getState().breakTypes).toHaveLength(2));
+      await user.click(screen.getByTestId("break-button"));
+
+      expect(screen.getByTestId("break-type-picker")).toBeInTheDocument();
+      expect(screen.getByTestId("break-type-option-bt-lunch")).toHaveTextContent("Lunch");
+      expect(screen.getByTestId("break-type-option-bt-lunch")).toHaveTextContent("60m");
+      expect(screen.getByTestId("break-type-option-bt-coffee")).toHaveTextContent("Coffee");
+      expect(screen.getByTestId("break-type-option-none")).toHaveTextContent("Quick pause");
+    });
+
+    it("picking a break type starts the break with that category and closes the picker", async () => {
+      vi.spyOn(workSessionService, "getActive").mockResolvedValue({
+        id: "s1", employee_id: "e1", started_at: new Date().toISOString(), ended_at: null, status: "active", total_minutes: null,
+      });
+      vi.spyOn(workSessionService, "getBreakTypes").mockResolvedValue([
+        { id: "bt-lunch", name: "Lunch", is_paid: false, max_minutes: 60 },
+      ]);
+      const startBreakSpy = vi.spyOn(workSessionService, "startBreak").mockResolvedValue({ status: "on_break" });
+      render(<CheckInWidget />);
+      const user = userEvent.setup();
+
+      await waitFor(() => expect(useTimerStore.getState().breakTypes).toHaveLength(1));
+      await user.click(screen.getByTestId("break-button"));
+      await user.click(screen.getByTestId("break-type-option-bt-lunch"));
+
+      expect(startBreakSpy).toHaveBeenCalledWith("s1", "bt-lunch");
+      await waitFor(() => expect(screen.queryByTestId("break-type-picker")).not.toBeInTheDocument());
+      expect(await screen.findByTestId("break-label")).toHaveTextContent("On break");
+    });
+
+    it("picking Quick pause starts an uncategorized break", async () => {
+      vi.spyOn(workSessionService, "getActive").mockResolvedValue({
+        id: "s1", employee_id: "e1", started_at: new Date().toISOString(), ended_at: null, status: "active", total_minutes: null,
+      });
+      vi.spyOn(workSessionService, "getBreakTypes").mockResolvedValue([
+        { id: "bt-lunch", name: "Lunch", is_paid: false, max_minutes: 60 },
+      ]);
+      const startBreakSpy = vi.spyOn(workSessionService, "startBreak").mockResolvedValue({ status: "on_break" });
+      render(<CheckInWidget />);
+      const user = userEvent.setup();
+
+      await waitFor(() => expect(useTimerStore.getState().breakTypes).toHaveLength(1));
+      await user.click(screen.getByTestId("break-button"));
+      await user.click(screen.getByTestId("break-type-option-none"));
+
+      expect(startBreakSpy).toHaveBeenCalledWith("s1", undefined);
+    });
+
+    it("skips the picker entirely (Phase 4 one-click pause) when the org has zero break types", async () => {
+      vi.spyOn(workSessionService, "getActive").mockResolvedValue({
+        id: "s1", employee_id: "e1", started_at: new Date().toISOString(), ended_at: null, status: "active", total_minutes: null,
+      });
+      vi.spyOn(workSessionService, "getBreakTypes").mockResolvedValue([]);
+      const startBreakSpy = vi.spyOn(workSessionService, "startBreak").mockResolvedValue({ status: "on_break" });
+      render(<CheckInWidget />);
+      const user = userEvent.setup();
+
+      await user.click(await screen.findByTestId("break-button"));
+
+      expect(screen.queryByTestId("break-type-picker")).not.toBeInTheDocument();
+      expect(startBreakSpy).toHaveBeenCalledWith("s1", undefined);
+    });
+  });
+
+  describe("Phase 5 — break history", () => {
+    it("shows today's breaks with computed durations once any exist", async () => {
+      const now = new Date();
+      const tenMinAgo = new Date(now.getTime() - 10 * 60_000);
+      const fiveMinAgo = new Date(now.getTime() - 5 * 60_000);
+      vi.spyOn(workSessionService, "getActive").mockResolvedValue({
+        id: "s1", employee_id: "e1", started_at: new Date(now.getTime() - 3_600_000).toISOString(),
+        ended_at: null, status: "active", total_minutes: null,
+      });
+      vi.spyOn(workSessionService, "listBreaks").mockResolvedValue([
+        { id: "b1", started_at: tenMinAgo.toISOString(), ended_at: fiveMinAgo.toISOString() },
+      ]);
+      render(<CheckInWidget />);
+
+      const history = await screen.findByTestId("break-history");
+      expect(history).toHaveTextContent("5m");
+      expect(history).not.toHaveTextContent("ongoing");
+    });
+
+    it("marks a still-open break as ongoing", async () => {
+      vi.spyOn(workSessionService, "getActive").mockResolvedValue({
+        id: "s1", employee_id: "e1", started_at: new Date().toISOString(), ended_at: null, status: "on_break", total_minutes: null,
+      });
+      vi.spyOn(workSessionService, "listBreaks").mockResolvedValue([
+        { id: "b1", started_at: new Date().toISOString(), ended_at: null },
+      ]);
+      render(<CheckInWidget />);
+
+      expect(await screen.findByTestId("break-history")).toHaveTextContent("ongoing");
+    });
+
+    it("hides the history section entirely when no breaks have been taken yet", async () => {
+      vi.spyOn(workSessionService, "getActive").mockResolvedValue({
+        id: "s1", employee_id: "e1", started_at: new Date().toISOString(), ended_at: null, status: "active", total_minutes: null,
+      });
+      vi.spyOn(workSessionService, "listBreaks").mockResolvedValue([]);
+      render(<CheckInWidget />);
+
+      await screen.findByTestId("checkin-button");
+      expect(screen.queryByTestId("break-history")).not.toBeInTheDocument();
+    });
   });
 });

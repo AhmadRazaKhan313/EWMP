@@ -192,6 +192,11 @@ describe("api-client — refresh flow (bug fixes vs. the web frontend)", () => {
     expect(window.ewmp.secureStore.delete).toHaveBeenCalledWith("accessToken");
   });
 
+  it("passes through non-401 errors untouched", async () => {
+    const error = { response: { status: 500 }, config: { url: "/x", headers: {} } };
+    await expect(getResponseInterceptor().rejected(error)).rejects.toBe(error);
+  });
+
   it("passes through a 401 from /auth/login itself untouched — must not be mistaken for an expired-session refresh case", async () => {
     // Regression test: before this fix, a wrong-password 401 on the login
     // call itself fell through to the refresh branch below, found no
@@ -206,10 +211,5 @@ describe("api-client — refresh flow (bug fixes vs. the web frontend)", () => {
     // Confirms it never entered the refresh path at all (which would have
     // read "refreshToken" from secureStore before throwing).
     expect(getRefreshSpy).not.toHaveBeenCalledWith("refreshToken");
-  });
-
-  it("passes through non-401 errors untouched", async () => {
-    const error = { response: { status: 500 }, config: { url: "/x", headers: {} } };
-    await expect(getResponseInterceptor().rejected(error)).rejects.toBe(error);
   });
 });

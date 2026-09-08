@@ -1,12 +1,12 @@
 {
   "name": "ewmp-desktop-agent",
   "version": "0.1.0",
-  "description": "EWMP employee desktop app — timer, attendance, breaks, profile. Talks to the same backend as the web dashboard.",
+  "description": "EWMP employee desktop app \u2014 timer, attendance, breaks, profile. Talks to the same backend as the web dashboard.",
   "main": "./out/main/index.js",
   "author": "EWMP",
   "private": true,
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "node api.js && electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
