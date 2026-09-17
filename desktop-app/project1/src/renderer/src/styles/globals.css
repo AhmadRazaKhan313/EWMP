@@ -1,0 +1,271 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   EWMP Desktop — design tokens
+   ----------------------------------------------------------------------------
+   Realigned to the EWMP ADMIN DASHBOARD's indigo system (see the web app's
+   Timesheet screen: indigo #4F46E5 stat band, white cards flat on a
+   #F5F6FA page, white sidebar, orange "Clocked In" status, green/red
+   shift markers on the punch ring).
+
+   This REPLACES the previous "#2d71d8 legacy employee portal" palette.
+   Rationale: an employee sees the admin-built web app in onboarding and
+   screenshots; two different brand colours across the same product reads
+   as two different products. One palette, two surfaces.
+
+   Per skills/design-system/SKILL.md: never hardcode a colour in a
+   component — every value below is consumed as hsl(var(--token)).
+   If you add a token here, add it to frontend/src/styles/globals.css too.
+   ========================================================================== */
+
+:root {
+  --font-heading: "Poppins", ui-sans-serif, system-ui;
+  --font-sans: "Poppins", ui-sans-serif, system-ui;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Surfaces & text */
+  --background: 228 38% 97%;          /* #F5F6FA page */
+  --background-subtle: 228 25% 94%;
+  --foreground: 221 39% 11%;          /* #111827 headings */
+  --foreground-subtle: 220 12% 32%;
+  --foreground-muted: 220 9% 46%;     /* #6B7280 labels */
+  --card: 0 0% 100%;
+  --card-foreground: 221 39% 11%;
+
+  /* Brand / interactive — indigo */
+  --primary: 243 75% 59%;             /* #4F46E5 */
+  --primary-foreground: 0 0% 100%;
+  --primary-hover: 245 58% 51%;       /* #4338CA */
+  --secondary: 245 82% 96%;           /* #EEEDFD chips, date selector */
+  --secondary-foreground: 243 75% 50%;
+  --secondary-hover: 245 70% 93%;
+  --accent: 245 82% 96%;
+  --accent-foreground: 243 75% 50%;
+
+  /* List-row tint — the Active-Employees rows in the admin UI */
+  --row: 240 83% 98%;                 /* #F5F5FE */
+
+  /* Muted / borders / inputs */
+  --muted: 228 30% 96%;
+  --muted-foreground: 220 9% 46%;
+  --border: 228 16% 94%;              /* #EDEEF2 */
+  --border-strong: 228 14% 85%;
+  --input: 228 16% 94%;
+  --ring: 243 75% 59%;
+
+  /* Semantic.
+     House rule (carried over from the admin UI, now explicit):
+       ORANGE means WAITING  — pending requests, overtime, "Clocked In".
+       RED    means WRONG    — stop actions, missing/absent records.
+     Overtime is therefore warning, never destructive. */
+  --destructive: 0 84% 60%;           /* #EF4444 */
+  --destructive-foreground: 0 0% 100%;
+  --destructive-subtle: 0 93% 94%;    /* #FEE2E2 */
+  --success: 142 71% 45%;             /* #22C55E */
+  --success-subtle: 141 79% 93%;      /* #DCFCE7 */
+  --warning: 25 95% 53%;              /* #F97316 */
+  --warning-subtle: 33 100% 92%;      /* #FFEDD5 */
+  --info: 243 75% 59%;
+  --info-subtle: 245 82% 96%;
+
+  /* Status badges (entity status specifically — see design-system skill) */
+  --status-active-bg: 141 79% 93%;
+  --status-active-fg: 142 71% 32%;
+  --status-warning-bg: 33 100% 92%;
+  --status-warning-fg: 25 95% 42%;
+  --status-error-bg: 0 93% 94%;
+  --status-error-fg: 0 74% 45%;
+
+  /* Punch ring — the donut on the Clock In card */
+  --ring-track: 240 11% 92%;          /* #E7E7EC unfilled arc */
+  --shift-start: 142 71% 45%;         /* green marker */
+  --shift-end: 0 84% 60%;             /* red marker */
+
+  /* Radii. Cards 14, controls 10, window 12 — matches the admin UI. */
+  --radius-card: 14px;
+  --radius-control: 10px;
+  --radius-chip: 8px;
+
+  /* Shadows. Content cards are FLAT in this system — separation comes
+     from white-on-#F5F6FA, not elevation. --shadow-sm is for floating
+     surfaces (widget, dropdowns, popovers) only. */
+  --shadow-xs: 0 1px 2px 0 rgb(17 24 39 / 0.04);
+  --shadow-sm: 0 8px 24px -10px rgb(17 24 39 / 0.20);
+  --shadow-md: 0 16px 40px -16px rgb(17 24 39 / 0.35);
+
+  /* Sidebar — WHITE in this system (the admin UI's sidebar is a white
+     rail with a hairline border, not a dark navy panel). Kept as its own
+     token group so the auth flow's dark brand panel stays independent. */
+  --sidebar-background: 0 0% 100%;
+  --sidebar-foreground: 221 39% 11%;
+  --sidebar-muted: 220 9% 46%;
+  --sidebar-active-bg: 245 82% 96%;
+  --sidebar-active-fg: 243 75% 50%;
+  --sidebar-hover: 228 38% 97%;
+  --sidebar-border: 228 16% 94%;
+
+  /* Auth-flow brand panel (ServerSetup / Consent / Login share one left
+     pane). Deep indigo-ink so "before login" and "after login" read as
+     the same product. */
+  --auth-ink: 244 47% 17%;
+  --auth-ink-2: 245 55% 24%;
+  --auth-ink-border: 245 30% 38%;
+  --auth-accent: 243 75% 68%;
+}
+
+.dark {
+  --background: 231 24% 8%;
+  --background-subtle: 231 22% 11%;
+  --foreground: 240 25% 93%;
+  --foreground-subtle: 235 12% 74%;
+  --foreground-muted: 232 10% 62%;
+  --card: 233 24% 13%;
+  --card-foreground: 240 25% 93%;
+
+  --primary: 245 84% 67%;             /* lifted so it holds on dark */
+  --primary-foreground: 0 0% 100%;
+  --primary-hover: 245 84% 73%;
+  --secondary: 240 25% 17%;
+  --secondary-foreground: 245 84% 80%;
+  --secondary-hover: 240 25% 22%;
+  --accent: 240 25% 17%;
+  --accent-foreground: 245 84% 80%;
+  --row: 235 22% 15%;
+
+  --muted: 235 20% 16%;
+  --muted-foreground: 232 10% 62%;
+  --border: 236 22% 18%;
+  --border-strong: 236 20% 28%;
+  --input: 236 22% 18%;
+  --ring: 245 84% 67%;
+
+  --destructive: 0 84% 71%;
+  --destructive-foreground: 231 24% 8%;
+  --destructive-subtle: 0 40% 17%;
+  --success: 154 62% 52%;
+  --success-subtle: 155 45% 13%;
+  --warning: 27 96% 61%;
+  --warning-subtle: 28 50% 14%;
+  --info: 245 84% 67%;
+  --info-subtle: 240 25% 17%;
+
+  --status-active-bg: 155 45% 13%;
+  --status-active-fg: 154 62% 62%;
+  --status-warning-bg: 28 50% 14%;
+  --status-warning-fg: 27 96% 66%;
+  --status-error-bg: 0 40% 17%;
+  --status-error-fg: 0 84% 76%;
+
+  --ring-track: 236 22% 18%;
+  --shift-start: 154 62% 52%;
+  --shift-end: 0 84% 71%;
+
+  --shadow-xs: none;
+  --shadow-sm: 0 8px 24px -10px rgb(0 0 0 / 0.7);
+  --shadow-md: 0 16px 40px -16px rgb(0 0 0 / 0.85);
+
+  --sidebar-background: 233 24% 13%;
+  --sidebar-foreground: 240 25% 93%;
+  --sidebar-muted: 232 10% 62%;
+  --sidebar-active-bg: 240 25% 19%;
+  --sidebar-active-fg: 245 84% 80%;
+  --sidebar-hover: 235 20% 16%;
+  --sidebar-border: 236 22% 18%;
+
+  --auth-ink: 244 40% 10%;
+  --auth-ink-2: 245 45% 16%;
+  --auth-ink-border: 245 25% 30%;
+  --auth-accent: 245 84% 72%;
+}
+
+* {
+  border-color: hsl(var(--border));
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  overflow: hidden; /* fixed-size app window, not a scrollable web page */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The floating desktop widget's BrowserWindow is transparent (see
+   main/index.ts's createWidgetWindow) so its rounded card can float
+   without a square frame — this override is what lets that transparency
+   show through. See main.tsx for where the class is added. */
+body.widget-window {
+  background-color: transparent;
+}
+
+#root {
+  height: 100vh;
+  width: 100vw;
+}
+
+/* Every time/duration/money figure in this app is tabular so digits do
+   not jump while the clock runs. Applied via .num rather than per-site
+   font-variant declarations. */
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Loading shimmer — one definition, used by every skeleton in the app
+   (design-system skill: don't reinvent loading UI). */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--background-subtle)) 37%,
+    hsl(var(--muted)) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--radius-chip);
+}
+
+@keyframes skeleton-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+.status-dot-pulse {
+  animation: status-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Scrollbars — the default Chromium bar is too heavy for a small app
+   window and visually competes with the flat-card layout. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--border-strong));
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: hsl(var(--foreground-muted)); }
+
+/* Visible keyboard focus everywhere — required, and easy to lose when
+   restyling buttons. */
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
