@@ -229,7 +229,13 @@ class TestListPayslipsSelfView:
 
         run_id = uuid.uuid4()
         own_payslip = _payslip(payroll_run_id=run_id, employee_id=EMP_ID)
-        db = _FakeDB([_FakeResult(scalars_list=[own_payslip])])
+        # 3 queued results: the payslips query, then list_payslips' own
+        # follow-up Employee lookup and User lookup (for employee_name).
+        db = _FakeDB([
+            _FakeResult(scalars_list=[own_payslip]),
+            _FakeResult(scalars_list=[]),
+            _FakeResult(scalars_list=[]),
+        ])
         user = SimpleNamespace(id=uuid.uuid4(), has_permission=lambda code: False)
 
         result = _run(list_payslips(run_id, user, TENANT, db))
@@ -257,7 +263,11 @@ class TestListPayslipsSelfView:
         run_id = uuid.uuid4()
         p1 = _payslip(payroll_run_id=run_id, employee_id=uuid.uuid4())
         p2 = _payslip(payroll_run_id=run_id, employee_id=uuid.uuid4())
-        db = _FakeDB([_FakeResult(scalars_list=[p1, p2])])
+        db = _FakeDB([
+            _FakeResult(scalars_list=[p1, p2]),
+            _FakeResult(scalars_list=[]),
+            _FakeResult(scalars_list=[]),
+        ])
         user = SimpleNamespace(id=uuid.uuid4(), has_permission=lambda code: True)
 
         result = _run(list_payslips(run_id, user, TENANT, db))
