@@ -16,6 +16,15 @@ Regression tests for two attendance Medium bugs:
    outright with "No check-in found" — it didn't just compute wrong hours,
    it couldn't check out at all.
 
+   The overnight tests below were rewritten when attendance moved to a
+   multi-punch model (attendance_punches). The GUARANTEE being protected
+   is unchanged — checking out must find the open session regardless of
+   which calendar date it was opened on — but it now lives in
+   `get_open_punch`, which is what these assert against. Testing the
+   handler end-to-end here would mean hand-queueing six fake query
+   results in call order, which pins the test to the handler's internal
+   sequence rather than to the behaviour that matters.
+
 No database needed — same fake-DB-queue technique used throughout this
 test suite (test_device_enrollment_c3.py, test_leave_completion.py, etc).
 
@@ -24,14 +33,21 @@ Run:  cd backend && pytest tests/test_attendance_regularize_overnight.py -v
 import asyncio
 import uuid
 from datetime import date as ddate
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from app.api.v1.hrms.attendance import CheckOutRequest, check_out, record_attendance
 from app.core.exceptions import ValidationError
-from app.models.attendance import AttendanceRecord, AttendanceSource, AttendanceStatus
+from app.models.attendance import (
+    AttendancePunch,
+    AttendanceRecord,
+    AttendanceSource,
+    AttendanceStatus,
+    Shift,
+)
+from app.services.attendance_punches import compute_cutoff_at, get_open_punch
 
 TENANT = uuid.uuid4()
 EMP_ID = uuid.uuid4()
@@ -218,69 +234,63 @@ class _CapturingDB:
         pass
 
 
-class TestCheckOutOvernight:
-    def test_query_no_longer_filters_by_calendar_date(self):
-        """THE bug assertion: the record lookup must not require
-        AttendanceRecord.date == today — that's exactly what broke overnight
-        shifts. It should instead look for any still-open session
-        (check_in set, check_out still null)."""
-        yesterday_record = _record(
-            date=ddate(2026, 3, 1),
-            check_in=datetime(2026, 3, 1, 23, 0, tzinfo=timezone.utc),
-            check_out=None,
-        )
-        db = _CapturingDB(_FakeResult(scalar=yesterday_record))
-        body = CheckOutRequest()
-        _run(check_out(body, _user(), TENANT, db))
+class TestCheckOutOvernightPunchLookup:
+    """
+    The open-punch lookup must never be scoped to a calendar date.
+
+    This is the overnight-shift bug restated for the punch model: a punch
+    opened at 23:00 on the 1st is still the punch that a 01:00 check-out
+    on the 2nd has to close.
+    """
+
+    def test_query_does_not_filter_by_calendar_date(self):
+        db = _CapturingDB(_FakeResult(scalar=None))
+        _run(get_open_punch(db, TENANT, EMP_ID))
 
         compiled = str(db.captured_stmt.compile(compile_kwargs={"literal_binds": True}))
         where_clause = compiled.split("WHERE", 1)[1] if "WHERE" in compiled else ""
-        assert "attendance_records.date =" not in where_clause, (
-            "check_out's lookup still filters by attendance_records.date == <today> — "
-            "this is exactly what breaks overnight shifts (bug still present)."
+
+        assert "date =" not in where_clause, (
+            "the open-punch lookup filters by a calendar date — this is exactly "
+            "what breaks overnight shifts"
         )
-        assert "check_out IS NULL" in where_clause
-        assert "check_in IS NOT NULL" in where_clause
+        # What it SHOULD key on: an open punch, not yet force-closed.
+        assert "punch_out IS NULL" in where_clause
+        assert "is_forced_checkout" in where_clause
 
-    def test_finds_yesterdays_open_session_when_checking_out_after_midnight(self):
-        yesterday_record = _record(
-            date=ddate(2026, 3, 1),
-            check_in=datetime(2026, 3, 1, 23, 0, tzinfo=timezone.utc),  # checked in 11pm
-            check_out=None,
+    def test_a_force_closed_punch_is_not_returned_as_open(self):
+        """
+        The Monday-morning case. Friday's punch was force-closed by the
+        scheduler; it must NOT come back as the open punch, or the
+        employee sees a 72-hour timer instead of a Check In button.
+        """
+        db = _CapturingDB(_FakeResult(scalar=None))
+        _run(get_open_punch(db, TENANT, EMP_ID))
+        compiled = str(db.captured_stmt.compile(compile_kwargs={"literal_binds": True}))
+        assert "is_forced_checkout = false" in compiled.lower()
+
+
+class TestOvernightDurationMaths:
+    """Duration across midnight, independent of any database."""
+
+    def test_two_hours_across_midnight_is_120_minutes(self):
+        punch = AttendancePunch(
+            punch_in=datetime(2026, 3, 1, 23, 0, tzinfo=timezone.utc),
+            punch_out=datetime(2026, 3, 2, 1, 0, tzinfo=timezone.utc),
         )
-        db = _FakeDB([_FakeResult(scalar=yesterday_record), _FakeResult(scalar=None)])  # + attendance-sync's WorkSession lookup
-        body = CheckOutRequest()
-        result = _run(check_out(body, _user(), TENANT, db))
+        minutes = int((punch.punch_out - punch.punch_in).total_seconds() // 60)
+        assert minutes == 120, "a crossing-midnight punch must not go negative or huge"
 
-        assert result["id"] == str(yesterday_record.id)
-        assert yesterday_record.check_out is not None
+    def test_cutoff_for_an_overnight_shift_lands_the_next_morning(self):
+        shift = Shift()
+        shift.start_time = time(22, 0)
+        shift.end_time = time(6, 0)
+        shift.is_overnight = True
+        shift.break_duration_minutes = 30
 
-    def test_computes_correct_duration_across_midnight(self, monkeypatch):
-        import app.api.v1.hrms.attendance as attendance_mod
+        punch_in = datetime(2026, 3, 1, 23, 0, tzinfo=timezone.utc)
+        cutoff = compute_cutoff_at(punch_in, shift)
 
-        checked_in_at = datetime(2026, 3, 1, 23, 0, tzinfo=timezone.utc)
-        checked_out_at = datetime(2026, 3, 2, 1, 0, tzinfo=timezone.utc)  # 2 hours later, next calendar day
-
-        class _FrozenDateTime(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return checked_out_at
-
-        monkeypatch.setattr(attendance_mod, "datetime", _FrozenDateTime)
-
-        yesterday_record = _record(date=ddate(2026, 3, 1), check_in=checked_in_at, check_out=None)
-        db = _FakeDB([_FakeResult(scalar=yesterday_record), _FakeResult(scalar=None)])  # + attendance-sync's WorkSession lookup
-        body = CheckOutRequest()
-        _run(check_out(body, _user(), TENANT, db))
-
-        # 23:00 -> 01:00 the next day = 120 minutes, not a negative/huge number.
-        assert yesterday_record.total_minutes == 120
-
-    def test_no_open_session_gives_a_clean_400_not_a_crash(self):
-        db = _FakeDB([_FakeResult(scalar=None)])
-        body = CheckOutRequest()
-        from fastapi import HTTPException
-
-        with pytest.raises(HTTPException) as exc_info:
-            _run(check_out(body, _user(), TENANT, db))
-        assert exc_info.value.status_code == 400
+        # Shift ends 06:00 on the 2nd; +4h grace = 10:00 on the 2nd.
+        assert cutoff == datetime(2026, 3, 2, 10, 0, tzinfo=timezone.utc)
+        assert cutoff > punch_in

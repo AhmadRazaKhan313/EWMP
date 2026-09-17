@@ -18,6 +18,7 @@ celery_app = Celery(
         "app.workers.tasks.reports",
         "app.workers.tasks.notifications",
         "app.workers.tasks.device_health",
+        "app.workers.tasks.work_sessions",
     ],
 )
 
@@ -45,5 +46,13 @@ celery_app.conf.beat_schedule = {
     "mark-stale-devices-offline": {
         "task": "device_health.mark_stale_devices_offline",
         "schedule": settings.DEVICE_HEARTBEAT_INTERVAL_SECONDS * 3,
+    },
+    # 5 min, not tied to any other interval — see work_sessions.py's
+    # docstring for why running this frequently is safe: the closing
+    # timestamp is always the fixed local-midnight boundary, never "now",
+    # so how often the sweep runs only affects detection latency.
+    "auto-close-overnight-work-sessions": {
+        "task": "work_sessions.auto_close_overnight_sessions",
+        "schedule": 300,
     },
 }
