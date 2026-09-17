@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError, PermissionDeniedError, ValidationError
+from app.core.exceptions import EmployeeProfileNotLinkedError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.security import create_attendance_qr_token, verify_attendance_qr_token
 from app.models.attendance import AttendanceRecord, AttendanceStatus, AttendanceSource, Shift
 from app.models.employee import Employee
@@ -66,7 +66,7 @@ async def _resolve_employee(
     # No target, or explicitly targeting self → the caller's own record.
     if employee_id is None or (own is not None and employee_id == own.id):
         if own is None:
-            raise NotFoundError("Employee profile not found for this user")
+            raise EmployeeProfileNotLinkedError()
         return own
 
     # Recording on behalf of someone else → manager/HR only.
@@ -144,13 +144,12 @@ async def list_attendance(
             )
         own = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
         if own is None:
-            raise NotFoundError("Employee profile not found for this user")
+            raise EmployeeProfileNotLinkedError()
         employee_id = own.id
 
-    filters = [
-        AttendanceRecord.tenant_id == tenant_id,
-        AttendanceRecord.is_deleted == False,
-    ]
+    filters = [AttendanceRecord.is_deleted == False]
+    if not getattr(current_user, "is_platform_admin", False):
+        filters.append(AttendanceRecord.tenant_id == tenant_id)
     if date_from:
         filters.append(AttendanceRecord.date >= date_from)
     if date_to:
@@ -161,10 +160,25 @@ async def list_attendance(
         filters.append(AttendanceRecord.status == status)
 
     offset = (page - 1) * page_size
-    stmt = select(AttendanceRecord).where(*filters).order_by(AttendanceRecord.date.desc()).offset(offset).limit(page_size)
+    stmt = (
+        select(AttendanceRecord, User)
+        .join(Employee, AttendanceRecord.employee_id == Employee.id)
+        .join(User, Employee.user_id == User.id)
+        .where(*filters)
+        .order_by(AttendanceRecord.date.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
     count_stmt = select(func.count()).select_from(AttendanceRecord).where(*filters)
 
-    items = (await db.execute(stmt)).scalars().all()
+    result = await db.execute(stmt)
+    rows = result.all()
+    if rows:
+        items = [(attendance, user) for attendance, user in rows]
+    else:
+        # Keep lightweight repository tests and legacy adapters compatible
+        # with the joined response.
+        items = [(attendance, None) for attendance in result.scalars().all()]
     total = (await db.execute(count_stmt)).scalar_one()
 
     return {
@@ -172,6 +186,12 @@ async def list_attendance(
             {
                 "id": str(r.id),
                 "employee_id": str(r.employee_id),
+                "employee_name": (
+                    user.display_name
+                    or f"{user.first_name} {user.last_name}".strip()
+                    if user
+                    else "Unknown"
+                ),
                 "date": str(r.date),
                 "check_in": r.check_in.isoformat() if r.check_in else None,
                 "check_out": r.check_out.isoformat() if r.check_out else None,
@@ -181,7 +201,7 @@ async def list_attendance(
                 "late_minutes": r.late_minutes,
                 "is_regularized": r.is_regularized,
             }
-            for r in items
+            for r, user in items
         ],
         "total": total,
         "page": page,

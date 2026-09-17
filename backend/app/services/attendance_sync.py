@@ -131,89 +131,84 @@ async def ensure_attendance_checked_in(
     source: AttendanceSource,
     checked_in_at: datetime | None = None,
 ) -> AttendanceRecord:
-    """Idempotent: called when the employee starts their timer via the
-    desktop app, so the web Attendance table/report shows the same
-    check-in without the employee having to also click Check In on web."""
+    """
+    Called when the employee starts their timer via the desktop app, so
+    the web Attendance table/report shows the same check-in without the
+    employee having to also click Check In on the website.
+
+    BUG THIS FIXES: this used to write straight onto
+    `AttendanceRecord.check_in` and returned early whenever that column
+    was already set for today — which is every time after the day's
+    FIRST desktop check-in. A second work session started later the same
+    day (after lunch, after stepping out) silently vanished: the function
+    saw `existing.check_in is not None`, returned the untouched record,
+    and nothing about the new session was ever recorded. The employee's
+    desktop timer looked fine because WorkSession itself was tracking it
+    correctly — only the attendance side, and everything downstream of
+    it (the dashboard's daily summary, payroll's total_minutes), stayed
+    frozen at the first punch of the day.
+
+    Now delegates to the same open_punch() the web /attendance/check-in
+    endpoint uses, so a desktop check-in and a web check-in are the same
+    operation regardless of which app made it, and both correctly add a
+    new punch rather than silently no-op-ing on every one after the
+    first.
+    """
+    from app.services.attendance_punches import get_open_punch, open_punch
+
     now = checked_in_at or datetime.now(UTC)
-    today = now.date()
 
-    existing = (
-        await db.execute(
-            select(AttendanceRecord).where(
-                AttendanceRecord.employee_id == employee.id,
-                AttendanceRecord.tenant_id == tenant_id,
-                AttendanceRecord.date == today,
-                AttendanceRecord.is_deleted == False,  # noqa: E712
+    # Idempotent: if a punch is already open (started from the OTHER
+    # app a moment ago), do nothing rather than raising — this is a sync
+    # call, and two apps racing to report the same check-in is normal,
+    # not an error.
+    already_open = await get_open_punch(db, tenant_id, employee.id)
+    if already_open is not None:
+        return (
+            await db.execute(
+                select(AttendanceRecord).where(
+                    AttendanceRecord.id == already_open.attendance_record_id
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if existing is not None and existing.check_in is not None:
-        return existing
+        ).scalar_one()
 
-    late_minutes = 0
-    shift_id = employee.default_shift_id
-    if shift_id:
-        shift = (await db.execute(select(Shift).where(Shift.id == shift_id))).scalar_one_or_none()
-        if shift:
-            late_minutes = _minutes_late(shift, now)
-    attendance_status = AttendanceStatus.LATE if late_minutes > 0 else AttendanceStatus.PRESENT
-
-    if existing is not None:
-        existing.check_in = now
-        existing.check_in_source = source
-        existing.late_minutes = late_minutes
-        existing.status = attendance_status
-        existing.shift_id = shift_id
-        return existing
-
-    record = AttendanceRecord(
-        tenant_id=tenant_id,
-        employee_id=employee.id,
-        date=today,
-        check_in=now,
-        check_in_source=source,
-        late_minutes=late_minutes,
-        status=attendance_status,
-        shift_id=shift_id,
+    _, record = await open_punch(
+        db, tenant_id=tenant_id, employee_id=employee.id, at=now,
+        source=source, shift_id=employee.default_shift_id,
     )
-    db.add(record)
-    await db.flush()
     return record
 
 
 async def ensure_attendance_checked_out(
-    db: AsyncSession, tenant_id: UUID, employee_id: UUID, *, checked_out_at: datetime | None = None
+    db: AsyncSession,
+    tenant_id: UUID,
+    employee_id: UUID,
+    *,
+    checked_out_at: datetime | None = None,
+    break_minutes: int = 0,
 ) -> AttendanceRecord | None:
-    """Idempotent no-op if there's no open check-in — a web check-out that
-    fires with nothing open (e.g. already closed) has nothing to do."""
-    record = (
-        await db.execute(
-            select(AttendanceRecord).where(
-                AttendanceRecord.employee_id == employee_id,
-                AttendanceRecord.tenant_id == tenant_id,
-                AttendanceRecord.check_in.isnot(None),
-                AttendanceRecord.check_out.is_(None),
-                AttendanceRecord.is_deleted == False,  # noqa: E712
-            )
-            .order_by(AttendanceRecord.check_in.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if record is None:
+    """
+    Mirror of ensure_attendance_checked_in for the end of a desktop
+    session — same bug, same fix: this used to look for "today's" record
+    with check_out still null and close it directly, which is exactly
+    the single-open-punch-per-day assumption that silently dropped every
+    punch after the first. Delegates to close_punch() so a desktop
+    check-out and a web check-out are the same operation.
+
+    `break_minutes` lets the caller (work_sessions.py's end_session,
+    which already computed break time for its own total_minutes) pass
+    that through so the attendance punch's duration excludes it too —
+    without this, the desktop's own total and the synced attendance
+    total would disagree by however long the employee's breaks were.
+    """
+    from app.services.attendance_punches import close_punch, get_open_punch
+
+    open_punch = await get_open_punch(db, tenant_id, employee_id)
+    if open_punch is None:
         return None
 
     now = checked_out_at or datetime.now(UTC)
-    record.check_out = now
-    total_minutes = int((now - record.check_in).total_seconds() // 60)
-    record.total_minutes = total_minutes
-
-    overtime_minutes = 0
-    if record.shift_id:
-        shift = (await db.execute(select(Shift).where(Shift.id == record.shift_id))).scalar_one_or_none()
-        if shift:
-            scheduled = _scheduled_minutes(shift)
-            overtime_minutes = max(0, total_minutes - scheduled)
-    record.overtime_minutes = overtime_minutes
-
-    await db.flush()
+    _, record = await close_punch(
+        db, open_punch, at=now, source=AttendanceSource.DESKTOP_AGENT, break_minutes=break_minutes
+    )
     return record
