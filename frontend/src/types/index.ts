@@ -35,6 +35,7 @@ export interface AuthUser {
   roles: string[];
   permissions: string[];
   has_full_access: boolean;
+  must_change_password: boolean;
 }
 
 export interface AuthResponse {
@@ -58,6 +59,7 @@ export interface MeResponse {
   permissions: string[];
   has_full_access: boolean;
   has_employee_profile: boolean;
+  must_change_password: boolean;
   preferences: Record<string, unknown>;
 }
 
@@ -77,6 +79,14 @@ export type EmploymentType =
   | "intern"
   | "freelance";
 
+export type JobNature =
+  | "permanent"
+  | "probationary"
+  | "contractual"
+  | "intern"
+  | "part_time"
+  | "temporary";
+
 export interface EmployeeListItem {
   id: string;
   employee_code: string;
@@ -86,6 +96,7 @@ export interface EmployeeListItem {
   avatar_url: string | null;
   employment_status: EmploymentStatus;
   employment_type: EmploymentType;
+  job_nature: JobNature;
   date_of_joining: string;
   department_id: string | null;
   designation_id: string | null;
@@ -134,6 +145,7 @@ export type AttendanceStatus =
 export interface AttendanceRecord {
   id: string;
   employee_id: string;
+  employee_name: string;
   date: string;
   check_in: string | null;
   check_out: string | null;

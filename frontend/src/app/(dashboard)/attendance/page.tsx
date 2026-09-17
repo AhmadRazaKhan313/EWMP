@@ -131,6 +131,13 @@ function formatDuration(minutes: number | null) {
 
 const columns: ColumnDef<AttendanceRecord, unknown>[] = [
   {
+    header: "Employee Name",
+    accessorKey: "employee_name",
+    cell: ({ getValue }) => (
+      <span className="text-sm font-medium">{getValue<string>()}</span>
+    ),
+  },
+  {
     header: "Date",
     accessorKey: "date",
     cell: ({ getValue }) => (

@@ -11,6 +11,7 @@ import { EmployeeDrawer } from "@/components/organisms/EmployeeDrawer";
 import { useRouter } from "next/navigation";
 
 const statusConfig: Record<string, { label: string; variant: "success"|"warning"|"error"|"default"|"info" }> = {
+  regular:        { label: "Regular",        variant: "success" },
   active:        { label: "Active",        variant: "success" },
   probation:     { label: "Probation",     variant: "info" },
   on_leave:      { label: "On Leave",      variant: "warning" },
@@ -18,6 +19,16 @@ const statusConfig: Record<string, { label: string; variant: "success"|"warning"
   terminated:    { label: "Terminated",    variant: "error" },
   resigned:      { label: "Resigned",      variant: "error" },
 };
+
+function getDisplayStatus(employee: EmployeeListItem) {
+  if (employee.job_nature === "permanent") {
+    return { label: "Regular", variant: "success" as const };
+  }
+  return statusConfig[employee.employment_status] ?? {
+    label: employee.employment_status,
+    variant: "default" as const,
+  };
+}
 
 function StatCard({ icon: Icon, label, value, colorKey }: { icon: React.ElementType; label: string; value: number; colorKey: string }) {
   const bg: Record<string,string> = { green:"bg-[hsl(var(--success-subtle))]", yellow:"bg-[hsl(var(--warning-subtle))]", red:"bg-[hsl(var(--status-error-bg))]", gray:"bg-[hsl(var(--secondary))]" };
@@ -83,9 +94,8 @@ export default function EmployeesPage() {
     },
     {
       id: "status", header: "Status", accessorKey: "employment_status",
-      cell: ({ getValue }) => {
-        const s = getValue<string>();
-        const cfg = statusConfig[s] ?? { label: s, variant: "default" as const };
+      cell: ({ row }) => {
+        const cfg = getDisplayStatus(row.original);
         return <Badge variant={cfg.variant}>{cfg.label}</Badge>;
       },
     },

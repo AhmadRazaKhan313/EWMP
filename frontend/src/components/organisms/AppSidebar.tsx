@@ -8,7 +8,7 @@ import {
   DollarSign, UserSearch, TrendingUp, Monitor, Package,
   Headphones, BarChart3, Settings, Bot, Workflow,
   Store, CreditCard, ChevronDown, ChevronRight,
-  LogOut, Shield, Clock, Briefcase, Tag, MapPin,
+  LogOut, Shield, Clock, Briefcase, Tag, MapPin, ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { useAuthStore } from "@/store/auth.store";
@@ -57,7 +57,13 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Payroll",      href: "/payroll",          icon: <DollarSign size={16}/>, permission: "payroll.view" },
   { label: "Recruitment",  href: "/recruitment",      icon: <UserSearch size={16}/>, permission: "recruitment.view" },
   { label: "Performance",  href: "/performance",      icon: <TrendingUp size={16}/>, permission: "performance.view" },
-  { label: "Devices",      href: "/devices",          icon: <Monitor size={16}/>,    permission: "devices.view" },
+  {
+    label: "Devices", href: "/devices", icon: <Monitor size={16}/>, permission: "devices.view", anyPermission: ["devices.view", "devices.view_alerts"],
+    children: [
+      { label: "All Devices",     href: "/devices",        icon: <Monitor size={14}/>, permission: "devices.view" },
+      { label: "Activity Alerts", href: "/devices/alerts",  icon: <ShieldAlert size={14}/>, permission: "devices.view_alerts" },
+    ],
+  },
   { label: "Assets",       href: "/assets",           icon: <Package size={16}/>,    permission: "assets.view" },
   { label: "Helpdesk",     href: "/helpdesk",         icon: <Headphones size={16}/>, permission: "helpdesk.view" },
   { label: "Reports",      href: "/reports",          icon: <BarChart3 size={16}/>,  permission: "reports.view" },
@@ -125,7 +131,7 @@ function filterNavItems(
 export function AppSidebar() {
   const pathname = usePathname();
   const { user, hasPermission, logout } = useAuthStore();
-  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set(["Organization", "Leave", "Attendance"]));
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set(["Organization", "Leave", "Attendance", "Devices"]));
 
   function toggleExpanded(label: string) {
     setExpandedItems(prev => {

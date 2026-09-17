@@ -13,6 +13,7 @@ import { Badge, Button, Card, Skeleton } from "@/components/atoms";
 import { EmployeeDrawer } from "@/components/organisms/EmployeeDrawer";
 
 const statusConfig: Record<string, { label: string; variant: "success" | "warning" | "error" | "info" | "default" }> = {
+  regular:       { label: "Regular",       variant: "success" },
   active:        { label: "Active",        variant: "success" },
   probation:     { label: "Probation",     variant: "info" },
   on_leave:      { label: "On Leave",      variant: "warning" },
@@ -69,7 +70,10 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
     );
   }
 
-  const status = statusConfig[employee.employment_status] ?? { label: employee.employment_status, variant: "default" as const };
+  const displayStatus = employee.job_nature === "permanent"
+    ? "permanent"
+    : employee.employment_status;
+  const status = statusConfig[displayStatus] ?? { label: displayStatus, variant: "default" as const };
   const initials = `${(employee.first_name || "")[0] ?? ""}${(employee.last_name || "")[0] ?? ""}`.toUpperCase();
 
   return (

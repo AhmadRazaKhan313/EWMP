@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth.store";
 import { AppSidebar } from "@/components/organisms/AppSidebar";
 import { AppTopbar } from "@/components/organisms/AppTopbar";
+import { ForcePasswordChangeModal } from "@/components/organisms/ForcePasswordChangeModal";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isInitialized, isLoading, user } = useAuthStore();
