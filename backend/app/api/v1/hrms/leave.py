@@ -9,7 +9,7 @@ from pydantic import BaseModel, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
+from app.core.exceptions import ConflictError, EmployeeProfileNotLinkedError, NotFoundError, PermissionDeniedError, ValidationError
 from app.models.attendance import LeaveType, LeaveBalance, LeaveRequest, LeaveRequestStatus
 from app.models.employee import Employee
 from app.models.organization import Organization
@@ -228,7 +228,7 @@ async def list_leave_requests(
         repo = EmployeeRepository(db, tenant_id)
         own = await repo.get_by_user_id(current_user.id)
         if own is None:
-            raise NotFoundError("Employee profile not found for this user")
+            raise EmployeeProfileNotLinkedError()
         employee_id = own.id
 
     filters = [LeaveRequest.tenant_id == tenant_id, LeaveRequest.is_deleted == False]
@@ -368,7 +368,7 @@ async def _resolve_leave_employee(
     # No target, or explicitly targeting self → the caller's own record.
     if employee_id is None or (own is not None and employee_id == own.id):
         if own is None:
-            raise NotFoundError("Employee profile not found for this user")
+            raise EmployeeProfileNotLinkedError()
         return own.id
 
     # Applying on behalf of someone else → manager/HR only.
