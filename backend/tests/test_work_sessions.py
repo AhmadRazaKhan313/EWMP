@@ -36,6 +36,11 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self._scalar
 
+    def scalar_one(self):
+        if self._scalar is None:
+            raise AssertionError("scalar_one() called with no row queued")
+        return self._scalar
+
     def scalars(self):
         return self
 
@@ -142,9 +147,27 @@ class TestGetActiveSession:
 
 class TestStartSession:
     def test_creates_a_new_session_when_none_exists(self):
+        # Starting a session now also opens an attendance PUNCH (see
+        # ensure_attendance_checked_in in attendance_sync.py, rewritten to
+        # fix the bug where every desktop check-in after the day's first
+        # silently vanished from attendance — see that function's
+        # docstring). That path makes more round trips than the old
+        # single-column write it replaced:
+        #   1. WorkSession existing-session check (this test's own guard)
+        #   2. get_open_punch — is a punch already open? (idempotency check)
+        #   3. get_open_punch again, inside open_punch itself (defense in
+        #      depth against a race between the two calls)
+        #   4. get_or_create_day — does today's attendance_records row exist?
+        #   5. recalculate_from_punches — re-reads the day's punches to
+        #      rebuild check_in/check_out/total_minutes from them
+        # employee.default_shift_id is None in this fixture, so no Shift
+        # lookup follows step 5.
         db = _FakeDB([
-            _FakeResult(scalar=None),  # no existing session
-            _FakeResult(scalar=None),  # attendance-sync: no attendance record yet today
+            _FakeResult(scalar=None),  # 1. no existing WorkSession
+            _FakeResult(scalar=None),  # 2. no open punch (idempotency check)
+            _FakeResult(scalar=None),  # 3. no open punch (open_punch's own check)
+            _FakeResult(scalar=None),  # 4. no attendance_records row for today yet
+            _ScalarsResult([]),        # 5. recalculate_from_punches's punch list
         ])
         result = _run(start_session(_user(), TENANT, db))
 
@@ -153,6 +176,18 @@ class TestStartSession:
         assert new_sessions[0].employee_id == EMP_ID
         assert new_sessions[0].status == WorkSessionStatus.ACTIVE
         assert result["status"] == "active"
+
+        # The bug this whole rewrite exists to fix: a new attendance PUNCH
+        # must actually be created, every time, not only silently accepted
+        # on the day's first call. Asserting on the created objects
+        # directly, rather than only on the WorkSession, is what would
+        # have caught the original "second check-in vanishes" bug — the
+        # old code also returned a 200 with a plausible-looking response.
+        from app.models.attendance import AttendancePunch
+
+        new_punches = [p for p in db.added if isinstance(p, AttendancePunch)]
+        assert len(new_punches) == 1
+        assert new_punches[0].employee_id == EMP_ID
 
     def test_is_idempotent_returns_existing_session_instead_of_creating_a_second(self):
         """THE core assertion: starting twice must never fork into two
@@ -324,3 +359,199 @@ class TestListBreakTypes:
         db = _FakeDB([_ScalarsResult([])])
         result = _run(list_break_types(_user(), TENANT, db))
         assert result["items"] == []
+
+
+class TestBreakTotalsPrecisionBugFix:
+    """
+    Regression tests for the sub-60-second-break bug: `_break_totals` used
+    to floor-divide each break's duration to whole minutes
+    (`int(seconds // 60)`) before summing. A break lasting anything under
+    60 seconds — the norm in practice, since there's always some network
+    latency between the break/start and break/end clicks and the server
+    timestamps it records — floored to exactly 0 and vanished from the
+    total entirely. The desktop/web timers then subtracted 0 break time
+    from "time since check-in", so the break's real duration silently got
+    counted as WORKED time instead of break time once the employee
+    resumed — reported as "working time shows the wrong minute after a
+    break ends".
+
+    Fix: sum whole seconds first, only floor-divide to minutes for the
+    (kept for compatibility) `total_break_minutes` value; the new
+    `total_break_seconds` is exact and is what timer math should use.
+    """
+
+    def test_a_59_second_break_no_longer_vanishes(self):
+        from app.api.v1.hrms.work_sessions import _break_totals
+
+        started = datetime.now(UTC) - timedelta(seconds=59)
+        b = BreakRecord(id=uuid.uuid4(), tenant_id=TENANT, work_session_id=uuid.uuid4(), started_at=started, ended_at=datetime.now(UTC))
+        db = _FakeDB([_ScalarsResult([b])])
+
+        minutes, seconds, open_break = _run(_break_totals(db, uuid.uuid4()))
+
+        # The old bug: minutes == 0 AND (because desktop/web multiplied
+        # minutes * 60) the break contributed literally nothing to the
+        # subtraction. The fix doesn't change the (inherently lossy)
+        # minutes value, but does give callers the precise seconds.
+        assert minutes == 0
+        assert seconds == 59
+        assert open_break is None
+
+    def test_a_90_second_break_no_longer_loses_its_extra_30_seconds(self):
+        from app.api.v1.hrms.work_sessions import _break_totals
+
+        started = datetime.now(UTC) - timedelta(seconds=90)
+        b = BreakRecord(id=uuid.uuid4(), tenant_id=TENANT, work_session_id=uuid.uuid4(), started_at=started, ended_at=datetime.now(UTC))
+        db = _FakeDB([_ScalarsResult([b])])
+
+        minutes, seconds, _ = _run(_break_totals(db, uuid.uuid4()))
+
+        assert minutes == 1  # old lossy value, kept for compatibility
+        assert seconds == 90  # what timer math should actually subtract
+
+    def test_multiple_short_breaks_sum_correctly_in_seconds(self):
+        from app.api.v1.hrms.work_sessions import _break_totals
+
+        now = datetime.now(UTC)
+        b1 = BreakRecord(id=uuid.uuid4(), tenant_id=TENANT, work_session_id=uuid.uuid4(), started_at=now - timedelta(seconds=200), ended_at=now - timedelta(seconds=155))  # 45s
+        b2 = BreakRecord(id=uuid.uuid4(), tenant_id=TENANT, work_session_id=uuid.uuid4(), started_at=now - timedelta(seconds=100), ended_at=now - timedelta(seconds=60))  # 40s
+        db = _FakeDB([_ScalarsResult([b1, b2])])
+
+        minutes, seconds, _ = _run(_break_totals(db, uuid.uuid4()))
+
+        # Old bug: floor(45/60) + floor(40/60) = 0 + 0 = 0 minutes, both
+        # breaks vanish even though together they're 85 real seconds.
+        assert seconds == 85
+        assert minutes == 1  # floor(85/60) — correct once summed as seconds first
+
+    def test_end_break_response_carries_the_precise_seconds_field(self):
+        """End-to-end through the real endpoint: a ~1-minute break's
+        end_break() response must expose total_break_seconds, not just
+        the lossy total_break_minutes, so clients can fix their math."""
+        session = _session(status=WorkSessionStatus.ON_BREAK)
+        open_break = BreakRecord(
+            id=uuid.uuid4(), tenant_id=TENANT, work_session_id=session.id,
+            started_at=datetime.now(UTC) - timedelta(seconds=58), ended_at=None,
+        )
+        db = _FakeDB([
+            _FakeResult(scalar=session),       # _get_own_session_or_404
+            _FakeResult(scalar=open_break),    # the open-break lookup
+            _ScalarsResult([open_break]),      # _break_totals (open_break.ended_at gets set before this query re-runs)
+        ])
+
+        result = _run(end_break(session.id, _user(), TENANT, db))
+
+        assert result["status"] == "active"
+        assert "total_break_seconds" in result
+        # The break was ~58s — under the old bug this would've reported
+        # total_break_minutes == 0 and (multiplied by 60) contributed
+        # nothing; now total_break_seconds reflects the real duration.
+        assert result["total_break_seconds"] >= 57
+
+class TestDesktopSecondCheckInIsNotDropped:
+    """
+    Regression guard for the reported bug: the 1st check-in/check-out of
+    the day showed up correctly, but every one after that neither counted
+    towards worked minutes nor appeared anywhere.
+
+    Root cause: ensure_attendance_checked_in (attendance_sync.py) wrote
+    straight onto AttendanceRecord.check_in and returned immediately
+    whenever that column was already set for today — which is every call
+    after the first. The desktop app's own WorkSession was tracking each
+    start/stop correctly; only the ATTENDANCE side silently stopped
+    updating after punch one.
+
+    This test starts and ends two sessions in the same day and checks the
+    attendance side directly (via the punch service), which is the part
+    that used to go silent.
+    """
+
+    def test_a_second_desktop_session_the_same_day_creates_a_second_punch(self):
+        import app.services.attendance_sync as sync_mod
+        from app.models.attendance import AttendancePunch, AttendanceRecord
+
+        calls: list[tuple[str, object]] = []
+
+        class _RecordingDB:
+            """Mimics just enough of AsyncSession for the punch service to
+            run against real (unpersisted) in-memory model instances,
+            rather than hand-queued opaque results — the previous style
+            of test could not have caught this bug because the fake
+            queue's replies are just whatever the test author queued,
+            independent of what the code under test actually did with
+            them."""
+
+            def __init__(self):
+                self.records: list[AttendanceRecord] = []
+                self.punches: list[AttendancePunch] = []
+
+            def add(self, obj):
+                if isinstance(obj, AttendanceRecord):
+                    self.records.append(obj)
+                elif isinstance(obj, AttendancePunch):
+                    self.punches.append(obj)
+
+            async def flush(self):
+                for obj in (*self.records, *self.punches):
+                    if getattr(obj, "id", None) is None:
+                        obj.id = uuid.uuid4()
+
+            async def execute(self, stmt):
+                entity = stmt.column_descriptions[0]["entity"]
+                calls.append((entity.__name__, None))
+
+                if entity is AttendancePunch:
+                    # Both "is there an open punch" and "all punches for
+                    # this record" queries land here; distinguish by
+                    # whether the statement filters on punch_out IS NULL.
+                    compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+                    if "punch_out IS NULL" in compiled:
+                        open_ones = [p for p in self.punches if p.punch_out is None]
+                        return _FakeResult(scalar=open_ones[-1] if open_ones else None)
+                    return _ScalarsResult(list(self.punches))
+
+                if entity is AttendanceRecord:
+                    return _FakeResult(scalar=self.records[-1] if self.records else None)
+
+                if entity.__name__ == "Shift":
+                    return _FakeResult(scalar=None)
+
+                raise AssertionError(f"unexpected query against {entity}")
+
+        db = _RecordingDB()
+        employee = SimpleNamespace(id=EMP_ID, default_shift_id=None)
+
+        morning_in = datetime.now(UTC) - timedelta(hours=6)
+        morning_out = morning_in + timedelta(hours=2)
+        afternoon_in = morning_out + timedelta(hours=1)
+        afternoon_out = afternoon_in + timedelta(hours=2)
+
+        from app.models.attendance import AttendanceSource
+
+        _run(
+            sync_mod.ensure_attendance_checked_in(
+                db, TENANT, employee, source=AttendanceSource.DESKTOP_AGENT, checked_in_at=morning_in
+            )
+        )
+        _run(sync_mod.ensure_attendance_checked_out(db, TENANT, EMP_ID, checked_out_at=morning_out))
+
+        # This second start is the exact scenario that used to vanish.
+        _run(
+            sync_mod.ensure_attendance_checked_in(
+                db, TENANT, employee, source=AttendanceSource.DESKTOP_AGENT, checked_in_at=afternoon_in
+            )
+        )
+        record = _run(
+            sync_mod.ensure_attendance_checked_out(db, TENANT, EMP_ID, checked_out_at=afternoon_out)
+        )
+
+        assert len(db.punches) == 2, "the afternoon session must create its OWN punch, not be dropped"
+        assert db.punches[0].punch_in == morning_in
+        assert db.punches[0].punch_out == morning_out
+        assert db.punches[1].punch_in == afternoon_in
+        assert db.punches[1].punch_out == afternoon_out
+
+        # And the day's total must be the SUM of both sessions (2h + 2h),
+        # not just the first one — this is the number payroll reads.
+        assert record.total_minutes == 240
+        assert record.punch_count == 2

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError, PermissionDeniedError
+from app.core.exceptions import EmployeeProfileNotLinkedError, NotFoundError, PermissionDeniedError
 from app.models.attendance import AttendanceSource
 from app.models.work_session import BreakRecord, BreakType, WorkSession, WorkSessionStatus
 from app.models.user import User
@@ -30,11 +30,16 @@ router = APIRouter(prefix="/work-sessions", tags=["Work Sessions"])
 async def _resolve_own_employee_id(db: AsyncSession, tenant_id: uuid.UUID, current_user: User) -> uuid.UUID:
     employee = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
     if employee is None:
-        raise NotFoundError("No employee profile is linked to this user")
+        raise EmployeeProfileNotLinkedError()
     return employee.id
 
 
-def _serialize(session: WorkSession, completed_break_minutes: int = 0, open_break: BreakRecord | None = None) -> dict:
+def _serialize(
+    session: WorkSession,
+    completed_break_minutes: int = 0,
+    open_break: BreakRecord | None = None,
+    completed_break_seconds: int | None = None,
+) -> dict:
     return {
         "id": str(session.id),
         "employee_id": str(session.employee_id),
@@ -45,21 +50,43 @@ def _serialize(session: WorkSession, completed_break_minutes: int = 0, open_brea
         # Lets clients (web + desktop) split "time since check-in" into a
         # working timer that pauses on break and a separate break timer,
         # without each client re-deriving it from a full breaks list.
+        # Kept for any existing consumer — floor-divided, so lossy for
+        # anything that isn't a whole number of minutes. New clients
+        # should prefer total_break_seconds below.
         "total_break_minutes": completed_break_minutes,
+        # Precise — see _break_totals()'s docstring for the bug this
+        # fixes (a sub-60-second break used to vanish entirely under the
+        # old minutes-only, floor-divided value).
+        "total_break_seconds": completed_break_seconds if completed_break_seconds is not None else completed_break_minutes * 60,
         "current_break_started_at": open_break.started_at.isoformat() if open_break else None,
     }
 
 
-async def _break_totals(db: AsyncSession, session_id: uuid.UUID) -> tuple[int, BreakRecord | None]:
-    """(completed break minutes so far, the currently-open break if any)."""
+async def _break_totals(db: AsyncSession, session_id: uuid.UUID) -> tuple[int, int, BreakRecord | None]:
+    """(completed break MINUTES so far — kept for backward compat with any
+    existing consumer of total_break_minutes, completed break SECONDS —
+    precise, what the timer math should actually use, the currently-open
+    break if any).
+
+    Bug fix: the old single `completed_minutes` value used
+    `int(seconds // 60)`, floor-dividing to whole minutes. A break under
+    60 seconds (near-guaranteed in practice — there's always a few
+    hundred ms of network latency between the break/start and break/end
+    click and the server recording each timestamp) floored to exactly 0,
+    so essentially every short break vanished from the total entirely and
+    its time silently got counted as "worked" instead. Returning the
+    precise second count lets callers (desktop/web timers) subtract the
+    real amount instead of a lossy, rounded-down one.
+    """
     breaks = (
         await db.execute(select(BreakRecord).where(BreakRecord.work_session_id == session_id))
     ).scalars().all()
     open_break = next((b for b in breaks if b.ended_at is None), None)
-    completed_minutes = sum(
-        int((b.ended_at - b.started_at).total_seconds() // 60) for b in breaks if b.ended_at is not None
+    completed_seconds = sum(
+        int((b.ended_at - b.started_at).total_seconds()) for b in breaks if b.ended_at is not None
     )
-    return completed_minutes, open_break
+    completed_minutes = completed_seconds // 60
+    return completed_minutes, completed_seconds, open_break
 
 
 async def _get_own_session_or_404(
@@ -112,8 +139,8 @@ async def list_my_sessions(
 
     serialized = []
     for s in items:
-        completed_minutes, open_break = await _break_totals(db, s.id)
-        serialized.append(_serialize(s, completed_minutes, open_break))
+        completed_minutes, completed_seconds, open_break = await _break_totals(db, s.id)
+        serialized.append(_serialize(s, completed_minutes, open_break, completed_seconds))
 
     return {
         "items": serialized,
@@ -143,8 +170,8 @@ async def get_active_session(
     ).scalar_one_or_none()
     if session is None:
         return None
-    completed_minutes, open_break = await _break_totals(db, session.id)
-    return _serialize(session, completed_minutes, open_break)
+    completed_minutes, completed_seconds, open_break = await _break_totals(db, session.id)
+    return _serialize(session, completed_minutes, open_break, completed_seconds)
 
 
 @router.post("/start", summary="Start (or resume) the caller's timer")
@@ -171,8 +198,8 @@ async def start_session(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        completed_minutes, open_break = await _break_totals(db, existing.id)
-        return _serialize(existing, completed_minutes, open_break)
+        completed_minutes, completed_seconds, open_break = await _break_totals(db, existing.id)
+        return _serialize(existing, completed_minutes, open_break, completed_seconds)
 
     session = WorkSession(
         tenant_id=tenant_id,
@@ -275,8 +302,8 @@ async def start_break(
     # Return the same shape as every other endpoint here (id/status/timing
     # fields incl. current_break_started_at) instead of a bespoke dict, so
     # clients can treat every work-session response identically.
-    completed_minutes, _ = await _break_totals(db, session.id)
-    return _serialize(session, completed_minutes, break_record)
+    completed_minutes, completed_seconds, _ = await _break_totals(db, session.id)
+    return _serialize(session, completed_minutes, break_record, completed_seconds)
 
 
 @router.post("/{session_id}/break/end", summary="End the current break, resuming the timer")
@@ -305,15 +332,15 @@ async def end_break(
         # sync somehow; heal by just resuming rather than 500ing.
         session.status = WorkSessionStatus.ACTIVE
         await db.flush()
-        completed_minutes, _ = await _break_totals(db, session.id)
-        return _serialize(session, completed_minutes, None)
+        completed_minutes, completed_seconds, _ = await _break_totals(db, session.id)
+        return _serialize(session, completed_minutes, None, completed_seconds)
 
     open_break.ended_at = datetime.now(UTC)
     session.status = WorkSessionStatus.ACTIVE
     await db.flush()
 
-    completed_minutes, _ = await _break_totals(db, session.id)
-    return _serialize(session, completed_minutes, None)
+    completed_minutes, completed_seconds, _ = await _break_totals(db, session.id)
+    return _serialize(session, completed_minutes, None, completed_seconds)
 
 
 @router.get("/{session_id}/breaks", summary="List breaks taken during a session")
