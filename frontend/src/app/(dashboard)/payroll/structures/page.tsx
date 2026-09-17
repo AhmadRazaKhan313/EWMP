@@ -1,12 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Layers } from "lucide-react";
+import { Plus, Layers, UserPlus } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import apiClient from "@/services/api-client";
 import { Badge, Button, Card, EmptyState, PageHeader } from "@/components/atoms";
 import { PayrollNav } from "../PayrollNav";
 import { SalaryStructureDrawer } from "./SalaryStructureDrawer";
+import { AssignSalaryDrawer } from "./AssignSalaryDrawer";
+import { ListSkeleton, QueryError } from "@/components/molecules/PayrollKit";
 
 interface StructureComponent {
   id: string; name: string; code: string; component_type: string; calculation_type: string;
@@ -34,8 +36,9 @@ function ComponentSummary({ c }: { c: StructureComponent }) {
 
 export default function SalaryStructuresPage() {
   const [showCreate, setShowCreate] = useState(false);
+  const [showAssign, setShowAssign] = useState(false);
 
-  const { data, isLoading } = useQuery({
+  const { data, isPending, isError, error, refetch } = useQuery({
     queryKey: ["salary-structures"],
     queryFn: async () => (await apiClient.get<{ items: SalaryStructure[]; total: number }>("/payroll/salary-structures")).data,
   });
@@ -47,12 +50,25 @@ export default function SalaryStructuresPage() {
       <PageHeader
         title="Payroll"
         description="Manage salary processing, payslips, and compensation."
-        action={<Button icon={<Plus size={15} />} onClick={() => setShowCreate(true)}>New Structure</Button>}
+        action={
+          <div className="flex gap-2">
+            {/* Assigning is the step people actually get stuck on — a
+                structure with nobody on it produces an empty run — so it
+                sits next to the create button rather than being buried
+                on an employee's detail page. */}
+            <Button variant="outline" icon={<UserPlus size={15} />} onClick={() => setShowAssign(true)}>
+              Assign to Employee
+            </Button>
+            <Button icon={<Plus size={15} />} onClick={() => setShowCreate(true)}>New Structure</Button>
+          </div>
+        }
       />
       <PayrollNav />
 
-      {isLoading ? (
-        <p className="text-sm text-[hsl(var(--foreground-muted))]">Loading…</p>
+      {isPending ? (
+        <ListSkeleton />
+      ) : isError ? (
+        <QueryError error={error} onRetry={refetch} />
       ) : structures.length === 0 ? (
         <Card>
           <EmptyState
@@ -95,6 +111,7 @@ export default function SalaryStructuresPage() {
       )}
 
       {showCreate && <SalaryStructureDrawer onClose={() => setShowCreate(false)} />}
+      {showAssign && <AssignSalaryDrawer onClose={() => setShowAssign(false)} />}
     </div>
   );
 }

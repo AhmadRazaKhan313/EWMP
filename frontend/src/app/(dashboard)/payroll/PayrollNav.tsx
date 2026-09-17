@@ -5,8 +5,12 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/utils/cn";
 
 const tabs = [
+  { href: "/payroll/dashboard", label: "Dashboard" },
   { href: "/payroll", label: "Payroll Runs" },
   { href: "/payroll/structures", label: "Salary Structures" },
+  { href: "/payroll/compensation", label: "Compensation" },
+  { href: "/payroll/tax", label: "Tax & Contributions" },
+  { href: "/payroll/accounting", label: "Accounting" },
   { href: "/payroll/settings", label: "Settings" },
 ];
 
@@ -14,7 +18,7 @@ export function PayrollNav() {
   const pathname = usePathname();
 
   return (
-    <div className="flex gap-1 border-b border-[hsl(var(--border))]">
+    <div className="flex flex-wrap gap-1 border-b border-[hsl(var(--border))]">
       {tabs.map((tab) => {
         const isActive = tab.href === "/payroll" ? pathname === "/payroll" : pathname?.startsWith(tab.href);
         return (

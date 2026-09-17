@@ -1,9 +1,11 @@
 "use client";
 
-import { X, TrendingUp, TrendingDown, Building2 } from "lucide-react";
+import { useState } from "react";
+import { X, TrendingUp, TrendingDown, Building2, Download, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import apiClient from "@/services/api-client";
 import { Badge } from "@/components/atoms";
+import { downloadPayslipPdf } from "@/services/payroll.service";
 
 interface PayslipLine {
   code: string;
@@ -54,7 +56,9 @@ function LineRow({ line, currency, tone }: { line: PayslipLine; currency: string
 }
 
 export function PayslipDrawer({ payslipId, onClose }: { payslipId: string; onClose: () => void }) {
-  const { data, isLoading } = useQuery({
+  const [downloading, setDownloading] = useState(false);
+
+  const { data, isPending } = useQuery({
     queryKey: ["payslip", payslipId],
     queryFn: async () => (await apiClient.get<PayslipDetail>(`/payroll/payslips/${payslipId}`)).data,
   });
@@ -72,12 +76,38 @@ export function PayslipDrawer({ payslipId, onClose }: { payslipId: string; onClo
               </p>
             )}
           </div>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-[hsl(var(--accent))] text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]">
-            <X size={16} />
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            {/* The PDF endpoint has existed since payslips did; this
+                drawer just never offered it, so an HR admin reviewing a
+                run had to go find the employee's own view to get a copy.
+                Same authenticated blob download as MyPayslipsView — a
+                plain link can't send the Bearer token. */}
+            <button
+              onClick={async () => {
+                if (!data) return;
+                setDownloading(true);
+                const safeName = data.employee_name.replace(/[^a-zA-Z0-9]+/g, "-");
+                await downloadPayslipPdf(payslipId, `payslip-${safeName}-${data.run.period_end}.pdf`);
+                setDownloading(false);
+              }}
+              disabled={!data || downloading}
+              title="Download payslip as PDF"
+              aria-label="Download payslip as PDF"
+              className="flex h-8 w-8 items-center justify-center rounded-md text-[hsl(var(--foreground-muted))] hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {downloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+            </button>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-[hsl(var(--accent))] text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]"
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
-        {isLoading || !data ? (
+        {isPending || !data ? (
           <div className="flex-1 p-6 text-sm text-[hsl(var(--foreground-muted))]">Loading…</div>
         ) : (
           <div className="flex-1 overflow-y-auto px-6 py-5">
@@ -139,7 +169,7 @@ export function PayslipDrawer({ payslipId, onClose }: { payslipId: string; onClo
                 <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[hsl(var(--foreground-muted))]">
                   <Building2 size={12} /> Employer Contributions
                 </div>
-                <p className="mb-1 text-[11px] text-[hsl(var(--foreground-muted))]">Paid by the company — doesn't affect net pay</p>
+                <p className="mb-1 text-[11px] text-[hsl(var(--foreground-muted))]">Paid by the company &mdash; doesn&apos;t affect net pay</p>
                 <div className="divide-y divide-[hsl(var(--border))]">
                   {data.employer_contributions.map((l) => <LineRow key={l.code} line={l} currency={data.run.currency} tone="contribution" />)}
                 </div>
