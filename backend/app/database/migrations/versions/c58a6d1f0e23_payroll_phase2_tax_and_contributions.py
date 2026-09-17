@@ -30,12 +30,24 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     bind = op.get_bind()
 
+    # Uppercase labels (matching the Python enum member's .name, e.g.
+    # "MONTHLY_TAXABLE_INCOME" not "monthly_taxable_income") — SQLAlchemy's
+    # Enum(python_enum_class) binds by .name by default, not .value. See
+    # ebe9ce81bf8e_fix_work_session_status_enum_casing.py for the same bug
+    # hit and fixed elsewhere in this codebase.
     tax_calculation_base_enum = postgresql.ENUM(
-        "monthly_taxable_income", "annual_taxable_income", name="tax_calculation_base_enum"
+        "MONTHLY_TAXABLE_INCOME", "ANNUAL_TAXABLE_INCOME", name="tax_calculation_base_enum",
+        create_type=False,
     )
     contribution_calculation_base_enum = postgresql.ENUM(
-        "basic", "gross", name="contribution_calculation_base_enum"
+        "BASIC", "GROSS", name="contribution_calculation_base_enum", create_type=False,
     )
+    # create_type=False above: without it, SQLAlchemy re-issues CREATE TYPE
+    # (with checkfirst=False) the moment these same enum objects are used
+    # as column types in op.create_table below — even though the explicit
+    # .create(checkfirst=True) call right here already succeeded. That
+    # second, unconditional attempt is what raises "type ... already
+    # exists" (asyncpg.DuplicateObjectError).
     for enum_type in (tax_calculation_base_enum, contribution_calculation_base_enum):
         enum_type.create(bind, checkfirst=True)
 
@@ -43,7 +55,7 @@ def upgrade() -> None:
     op.create_table(
         "payroll_tax_rules",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True),
+        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
@@ -51,7 +63,7 @@ def upgrade() -> None:
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("country", sa.String(100), nullable=False),
         sa.Column("tax_year", sa.String(20), nullable=False),
-        sa.Column("calculation_base", tax_calculation_base_enum, nullable=False, server_default="monthly_taxable_income"),
+        sa.Column("calculation_base", tax_calculation_base_enum, nullable=False, server_default="MONTHLY_TAXABLE_INCOME"),
         sa.Column("is_active", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("effective_from", sa.Date, nullable=False),
         sa.Column("effective_to", sa.Date, nullable=True),
@@ -64,7 +76,7 @@ def upgrade() -> None:
     op.create_table(
         "payroll_tax_brackets",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True),
+        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
@@ -82,14 +94,14 @@ def upgrade() -> None:
     op.create_table(
         "payroll_contribution_rules",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True),
+        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("is_deleted", sa.Boolean, nullable=False, server_default="false"),
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("code", sa.String(50), nullable=False),
-        sa.Column("calculation_base", contribution_calculation_base_enum, nullable=False, server_default="basic"),
+        sa.Column("calculation_base", contribution_calculation_base_enum, nullable=False, server_default="BASIC"),
         sa.Column("employee_percentage", sa.Numeric(5, 2), nullable=True),
         sa.Column("employee_fixed_amount", sa.Numeric(12, 2), nullable=True),
         sa.Column("employer_percentage", sa.Numeric(5, 2), nullable=True),
