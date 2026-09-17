@@ -87,7 +87,11 @@ class Settings(BaseSettings):
     DEVICE_OFFLINE_AFTER_SECONDS: int = 180
 
     # ── Email ────────────────────────────────────────────────────
-    SMTP_HOST: str = "smtp.gmail.com"
+    # Brevo's free tier (300 emails/day, no card required) — see .env for
+    # the signup + SMTP-key setup steps. SMTP_USER/PASSWORD still need to
+    # be filled in per-environment; this default only saves re-typing the
+    # host/port every time.
+    SMTP_HOST: str = "smtp-relay.brevo.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""

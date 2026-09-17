@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.security import generate_password_reset_token, hash_password
-from app.models.employee import Employee, EmploymentStatus
+from app.models.employee import Employee, EmploymentStatus, JobNature
 from app.models.rbac import Role
 from app.models.user import User
 from app.repositories.employee import EmployeeRepository
@@ -121,6 +121,7 @@ class EmployeeService:
                 last_name=data.last_name,
                 is_active=True,
                 is_email_verified=False,
+                must_change_password=True,
                 roles=[role],
             )
             self.db.add(user)
@@ -142,9 +143,11 @@ class EmployeeService:
             "manager_id": data.manager_id,
             "employment_type": data.employment_type,
             "job_nature": data.job_nature,
-            "employment_status": EmploymentStatus.PROBATION
-            if data.date_of_joining == date.today()
-            else EmploymentStatus.ACTIVE,
+            "employment_status": (
+                EmploymentStatus.PROBATION
+                if data.job_nature == JobNature.PROBATIONARY
+                else EmploymentStatus.ACTIVE
+            ),
             "date_of_joining": data.date_of_joining,
             "date_of_birth": data.date_of_birth,
             "gender": data.gender,

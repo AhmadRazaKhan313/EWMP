@@ -135,6 +135,19 @@ class User(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
         index=True,
         comment="True only for the seeded platform super admin",
     )
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        comment=(
+            "True when the current password was set by someone else "
+            "(e.g. a randomly generated temporary password handed to a "
+            "new employee/owner at creation time). While true, the "
+            "frontend and desktop app force a change-password screen "
+            "before anything else is usable. Cleared automatically the "
+            "next time the user successfully changes their password."
+        ),
+    )
 
     # ── Email verification ────────────────────────────────────────
     email_verification_token: Mapped[str | None] = mapped_column(

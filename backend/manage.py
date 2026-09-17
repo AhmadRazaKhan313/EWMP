@@ -6,6 +6,7 @@ Usage:
     python manage.py seed --permissions   # Seed all permissions
     python manage.py seed --superadmin    # Create platform super admin
     python manage.py seed --all           # Seed everything
+    python manage.py attendance-cutoff    # Force-close stale punches (run hourly)
 """
 
 import asyncio
@@ -132,9 +133,37 @@ async def seed_superadmin() -> None:
         print(f"✅ Super admin created: {settings.SUPER_ADMIN_EMAIL}")
 
 
+async def attendance_cutoff() -> None:
+    """
+    Force-close attendance punches that have run past their shift cutoff.
+
+    Meant to be run on a schedule — hourly is a sensible default:
+
+        0 * * * *  cd /app && python manage.py attendance-cutoff
+
+    Deliberately a CLI entrypoint rather than a timer inside the API
+    process. The API runs replicated, so an in-process timer means every
+    replica runs its own cutoff pass concurrently. One cron caller gives
+    one pass, a real exit code, and somewhere for failures to be seen.
+
+    The underlying pass is idempotent, so a missed hour self-heals on the
+    next run and an accidental double-run is harmless.
+    """
+    from app.core.database import AsyncSessionLocal
+    from app.services.attendance_punches import run_auto_cutoff
+
+    async with AsyncSessionLocal() as db:
+        result = await run_auto_cutoff(db)
+        await db.commit()
+
+    print(f"Auto-cutoff: scanned {result.scanned} open punch(es), force-closed {result.closed}.")
+    for punch_id in result.closed_punch_ids:
+        print(f"  force-closed punch {punch_id}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="EWMP Management CLI")
-    parser.add_argument("command", choices=["seed"])
+    parser.add_argument("command", choices=["seed", "attendance-cutoff"])
     parser.add_argument("--permissions", action="store_true")
     parser.add_argument("--superadmin", action="store_true")
     parser.add_argument("--all", action="store_true", dest="all_")
@@ -158,6 +187,9 @@ def main() -> None:
             asyncio.run(_run_seeds())
         else:
             print("Specify --permissions, --superadmin, or --all")
+
+    elif args.command == "attendance-cutoff":
+        asyncio.run(attendance_cutoff())
 
 
 if __name__ == "__main__":
