@@ -175,8 +175,10 @@ class PayrollRunStatus(str, enum.Enum):
     PROCESSING = "processing"
     REVIEW = "review"
     APPROVED = "approved"
+    LOCKED = "locked"        # finalized — inputs frozen, snapshot taken
     PAID = "paid"
     CANCELLED = "cancelled"
+    REOPENED = "reopened"    # explicitly unlocked for correction, logged
 
 
 class PayslipStatus(str, enum.Enum):
@@ -185,6 +187,7 @@ class PayslipStatus(str, enum.Enum):
     SENT = "sent"
     PAID = "paid"
     ON_HOLD = "on_hold"
+    REVERSED = "reversed"    # voided by a payroll reversal — kept for audit history, not deleted
 
 
 class PayrollSettings(TenantModel):
@@ -449,9 +452,18 @@ class PayrollRun(TenantModel):
     processed_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     approved_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reopened_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reopen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reversed_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reversal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     payslips: Mapped[list["Payslip"]] = relationship("Payslip", back_populates="payroll_run")
+    approvals: Mapped[list["PayrollApproval"]] = relationship("PayrollApproval", back_populates="payroll_run")
 
     def __repr__(self) -> str:
         return f"<PayrollRun {self.name!r} {self.period_start}→{self.period_end}>"
@@ -781,3 +793,197 @@ class PayrollReimbursement(TenantModel):
 
     def __repr__(self) -> str:
         return f"<PayrollReimbursement {self.category.value} employee={self.employee_id} {self.amount}>"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 4: Approval workflow, Locking/Reopening/Reversal, Snapshots, Audit Log
+# ═══════════════════════════════════════════════════════════════════════════
+class ApprovalDecision(str, enum.Enum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class PayrollApprovalLevel(TenantModel):
+    """
+    One step in a tenant-configured, ordered approval chain — e.g.
+    'Payroll Processor' (order 1) -> 'HR Manager' (order 2) -> 'Finance
+    Manager' (order 3). Whoever holds required_permission can approve at
+    that level. A run only reaches APPROVED once every active level has
+    recorded an APPROVED PayrollApproval — see the /runs/{id}/approve
+    endpoint. If no levels are configured for a tenant, approval falls
+    back to the original single-step behavior for backward compatibility.
+    """
+    __tablename__ = "payroll_approval_levels"
+
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    level_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    required_permission: Mapped[str] = mapped_column(String(100), default="payroll.approve", server_default="payroll.approve")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+
+    def __repr__(self) -> str:
+        return f"<PayrollApprovalLevel {self.level_order}:{self.name!r}>"
+
+
+class PayrollApproval(TenantModel):
+    """One recorded decision at one level, for one run. A REJECTED decision
+    sends the run back to REVIEW (not forward) — see the approve endpoint."""
+    __tablename__ = "payroll_approvals"
+
+    payroll_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    level_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("payroll_approval_levels.id", ondelete="SET NULL"), nullable=True)
+    approved_by_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    decision: Mapped[ApprovalDecision] = mapped_column(SAEnum(ApprovalDecision, name="approval_decision_enum"), nullable=False)
+    comments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    payroll_run: Mapped["PayrollRun"] = relationship("PayrollRun", back_populates="approvals")
+
+    def __repr__(self) -> str:
+        return f"<PayrollApproval run={self.payroll_run_id} {self.decision.value}>"
+
+
+class PayrollSnapshot(TenantModel):
+    """
+    Taken exactly once, when a run is finalized/locked. Freezes everything
+    a later config change must NOT be able to retroactively alter: which
+    salary structure/component VERSIONS were used, which tax rule and
+    contribution rules applied, and the payroll settings in effect —
+    satisfying "a finalized payroll must not depend on future database
+    changes." snapshot_data is intentionally a JSON blob (not normalized
+    tables) since its entire purpose is to be a point-in-time, read-only
+    record, never queried/joined against — only ever displayed as-is.
+    """
+    __tablename__ = "payroll_snapshots"
+
+    payroll_run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="CASCADE"), nullable=False, unique=True,
+    )
+    snapshot_data: Mapped[dict] = mapped_column(JSON, nullable=False)
+    taken_by_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"<PayrollSnapshot run={self.payroll_run_id}>"
+
+
+class PayrollAuditLog(TenantModel):
+    """
+    Append-only audit trail for every sensitive payroll action. Never
+    updated or deleted after creation — a row here IS the historical
+    record, so soft-delete/edit would defeat its purpose (TenantModel's
+    is_deleted flag is simply never set on these rows).
+    """
+    __tablename__ = "payroll_audit_logs"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True,
+        comment="e.g. RUN_CREATED, RUN_GENERATED, RUN_APPROVED, RUN_FINALIZED, RUN_REOPENED, RUN_REVERSED, PAYSLIP_DOWNLOADED",
+    )
+    entity_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    previous_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    new_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<PayrollAuditLog {self.action} {self.entity_type}={self.entity_id}>"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 5: Accounting Integration, Payment Processing, Reports/YTD support
+# ═══════════════════════════════════════════════════════════════════════════
+class AccountMappingPurpose(str, enum.Enum):
+    SALARY_EXPENSE = "salary_expense"                          # Debit — gross earnings
+    EMPLOYER_CONTRIBUTION_EXPENSE = "employer_contribution_expense"  # Debit
+    NET_PAY_PAYABLE = "net_pay_payable"                        # Credit
+    TAX_PAYABLE = "tax_payable"                                # Credit
+    CONTRIBUTION_PAYABLE = "contribution_payable"              # Credit — employee + employer sides
+    LOAN_RECOVERY_PAYABLE = "loan_recovery_payable"            # Credit
+    ADVANCE_RECOVERY_PAYABLE = "advance_recovery_payable"      # Credit
+    OTHER_DEDUCTIONS_PAYABLE = "other_deductions_payable"      # Credit — catch-all
+
+
+class PayrollAccountMapping(TenantModel):
+    """
+    Maps a journal-entry purpose to a real chart-of-accounts code — no
+    account IDs are ever hardcoded (see app/services/payroll_accounting.py).
+    One row per purpose per tenant; a purpose with no configured mapping
+    falls back to a clearly-labeled placeholder code the finance team must
+    remap before actually posting entries anywhere.
+    """
+    __tablename__ = "payroll_account_mappings"
+
+    purpose: Mapped[AccountMappingPurpose] = mapped_column(
+        SAEnum(AccountMappingPurpose, name="account_mapping_purpose_enum"), nullable=False,
+    )
+    account_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    account_name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<PayrollAccountMapping {self.purpose.value} -> {self.account_code}>"
+
+
+class PaymentBatchStatus(str, enum.Enum):
+    PREPARED = "prepared"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PaymentItemStatus(str, enum.Enum):
+    PENDING = "pending"
+    PAID = "paid"
+    FAILED = "failed"
+
+
+class PaymentBatch(TenantModel):
+    """
+    A prepared bank-transfer batch for one payroll run. Creating a batch
+    does NOT mark the run/payslips as paid — that only happens as
+    individual items get reconciled (see PaymentBatchItem.status), keeping
+    'payroll finalized' and 'money actually moved' as genuinely separate
+    facts (spec requirement: don't conflate Finalized with Paid).
+    """
+    __tablename__ = "payroll_payment_batches"
+
+    payroll_run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("payroll_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[PaymentBatchStatus] = mapped_column(
+        SAEnum(PaymentBatchStatus, name="payment_batch_status_enum"), default=PaymentBatchStatus.PREPARED, nullable=False,
+    )
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_by_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    items: Mapped[list["PaymentBatchItem"]] = relationship("PaymentBatchItem", back_populates="batch")
+
+    def __repr__(self) -> str:
+        return f"<PaymentBatch run={self.payroll_run_id} {self.status.value}>"
+
+
+class PaymentBatchItem(TenantModel):
+    """
+    One employee's payment within a batch. Bank details are SNAPSHOTTED
+    here at batch-creation time (not read live from Employee) — if an
+    employee updates their bank account next month, this historical
+    payment record must keep showing what was actually paid where.
+    """
+    __tablename__ = "payroll_payment_batch_items"
+
+    batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("payroll_payment_batches.id", ondelete="CASCADE"), nullable=False, index=True)
+    payslip_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("payslips.id", ondelete="CASCADE"), nullable=False)
+    employee_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    bank_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bank_account_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bank_account_title: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[PaymentItemStatus] = mapped_column(
+        SAEnum(PaymentItemStatus, name="payment_item_status_enum"), default=PaymentItemStatus.PENDING, nullable=False,
+    )
+    payment_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    batch: Mapped["PaymentBatch"] = relationship("PaymentBatch", back_populates="items")
+
+    def __repr__(self) -> str:
+        return f"<PaymentBatchItem employee={self.employee_id} {self.status.value}>"
