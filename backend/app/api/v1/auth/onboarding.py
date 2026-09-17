@@ -68,6 +68,7 @@ async def register_employee_user(
         last_name=data.last_name,
         is_active=True,
         is_email_verified=False,
+        must_change_password=True,
     )
     db.add(user)
     await db.flush()

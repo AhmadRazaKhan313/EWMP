@@ -162,6 +162,7 @@ class UserInToken(BaseModel):
     roles: list[str]
     permissions: list[str]
     has_full_access: bool = False
+    must_change_password: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -189,6 +190,7 @@ class MeResponse(BaseModel):
     permissions: list[str]
     has_full_access: bool = False
     has_employee_profile: bool = False
+    must_change_password: bool = False
     preferences: dict
 
     model_config = {"from_attributes": True}

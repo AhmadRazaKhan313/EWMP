@@ -188,6 +188,7 @@ async def create_organization(
         last_name=data.owner_last_name,
         is_active=True,
         is_email_verified=False,
+        must_change_password=True,
     )
     db.add(owner)
     await db.flush()
@@ -198,6 +199,17 @@ async def create_organization(
 
     org.owner_id = owner.id
     await db.flush()
+
+    # The owner can already sign in with the temp password returned below
+    # (shared with them out-of-band, same as before) — but ALSO gets a
+    # real email now: this reuses the exact same forgot-password flow
+    # (same password_reset_token field, same /auth/reset-password
+    # endpoint, same Celery task) rather than inventing a second,
+    # untested code path. Fire-and-forget by design (mirrors
+    # AuthService._queue_password_reset_email) — if SMTP/Celery isn't
+    # configured, org creation must not fail because of it; the
+    # on-screen temp password is exactly the fallback for that case.
+    await AuthService(db).request_password_reset(data.owner_email)
 
     return {
         "message": f'Organization "{org.name}" created',

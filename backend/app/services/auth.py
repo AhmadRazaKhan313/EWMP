@@ -286,6 +286,7 @@ class AuthService:
             roles=[r.slug for r in user.roles],
             permissions=sorted(all_permissions),
             has_full_access=user.has_full_access,
+            must_change_password=user.must_change_password,
         )
 
         return AuthResponse(tokens=tokens, user=user_data)

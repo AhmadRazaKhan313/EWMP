@@ -183,6 +183,7 @@ async def get_me(
         permissions=sorted(all_permissions),
         has_full_access=user.has_full_access,
         has_employee_profile=has_employee_profile,
+        must_change_password=user.must_change_password,
         preferences=user.preferences or {},
     )
 
@@ -236,6 +237,7 @@ async def update_me(
         permissions=sorted(all_permissions),
         has_full_access=user.has_full_access,
         has_employee_profile=has_employee_profile,
+        must_change_password=user.must_change_password,
         preferences=user.preferences or {},
     )
 
@@ -322,7 +324,16 @@ async def change_password(
         raise InvalidCredentialsError("Current password is incorrect")
 
     repo = UserRepository(db)
-    await repo.update(user.id, {"password_hash": hash_password(data.new_password)})
+    await repo.update(
+        user.id,
+        {
+            "password_hash": hash_password(data.new_password),
+            # Whatever forced them here (a temp password from an admin,
+            # employee onboarding, etc.) is satisfied now — clear the
+            # flag so the force-change screen doesn't show again.
+            "must_change_password": False,
+        },
+    )
     return {"message": "Password changed successfully"}
 
 
