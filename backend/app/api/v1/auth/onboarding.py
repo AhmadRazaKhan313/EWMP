@@ -15,6 +15,7 @@ from app.core.security import hash_password, generate_password_reset_token
 from app.models.user import User
 from app.models.organization import Organization
 from app.permissions.dependencies import get_tenant_id, require_permission
+from app.services.auth import new_email_verification_fields, queue_verification_email
 
 router = APIRouter(prefix="/auth", tags=["Auth — Onboarding"])
 
@@ -69,9 +70,12 @@ async def register_employee_user(
         is_active=True,
         is_email_verified=False,
         must_change_password=True,
+        **new_email_verification_fields(),
     )
     db.add(user)
     await db.flush()
+    # Without this the invited employee could never verify (audit C-3).
+    queue_verification_email(user.email, user.email_verification_token)
 
     return RegisterEmployeeResponse(
         user_id=str(user.id),

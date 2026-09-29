@@ -3,12 +3,14 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError
 from app.models.helpdesk import SupportTicket, TicketStatus, TicketPriority
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
+from app.repositories.employee import EmployeeRepository
 from datetime import datetime, UTC
 
 router = APIRouter(prefix="/helpdesk", tags=["Helpdesk"])
@@ -28,13 +30,35 @@ class TicketUpdate(BaseModel):
     priority: str | None = None
     resolution_notes: str | None = None
 
+TICKET_PREFIX = "TKT-"
+
+
 async def _next_ticket_number(db, tenant_id) -> str:
-    count_result = await db.execute(
-        select(func.count()).select_from(SupportTicket)
-        .where(SupportTicket.tenant_id == tenant_id)
-    )
-    count = count_result.scalar_one()
-    return f"TKT-{str(count + 1).zfill(5)}"
+    """Next per-organisation ticket number: highest existing numeric suffix
+    in THIS organisation (soft-deleted tickets included, so a number is never
+    handed out twice) + 1.
+
+    Used to be count(*) + 1, which reused a number whenever a row was missing
+    from the count, and — combined with a platform-wide unique constraint —
+    made every organisation after the first collide with the first one's
+    TKT-00001 (audit C-5). Concurrent requests can still compute the same
+    number; the (tenant_id, ticket_number) constraint catches that and
+    create_ticket retries.
+    """
+    numbers = (
+        await db.execute(
+            select(SupportTicket.ticket_number).where(
+                SupportTicket.tenant_id == tenant_id,
+                SupportTicket.ticket_number.like(f"{TICKET_PREFIX}%"),
+            )
+        )
+    ).scalars().all()
+    highest = 0
+    for number in numbers:
+        suffix = number[len(TICKET_PREFIX):]
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return f"{TICKET_PREFIX}{str(highest + 1).zfill(5)}"
 
 @router.get("/tickets")
 async def list_tickets(
@@ -79,15 +103,33 @@ async def create_ticket(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    ticket_number = await _next_ticket_number(db, tenant_id)
-    ticket = SupportTicket(
-        tenant_id=tenant_id, ticket_number=ticket_number,
-        title=body.title, description=body.description or None,
-        category=body.category, priority=body.priority,
-        status=TicketStatus.OPEN, device_id=body.device_id,
-    )
-    db.add(ticket)
-    await db.flush()
+    # Who raised it: the caller's own employee record (None for accounts
+    # without one, e.g. a platform admin). Tickets used to be saved with no
+    # requester at all, so nobody could tell whose problem it was.
+    requester = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
+
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        ticket_number = await _next_ticket_number(db, tenant_id)
+        ticket = SupportTicket(
+            tenant_id=tenant_id, ticket_number=ticket_number,
+            title=body.title, description=body.description or None,
+            category=body.category, priority=body.priority,
+            status=TicketStatus.OPEN, device_id=body.device_id,
+            requester_id=requester.id if requester else None,
+        )
+        try:
+            # SAVEPOINT: a lost race with a concurrent create only rolls back
+            # this attempt, then we recompute the number and try again.
+            async with db.begin_nested():
+                db.add(ticket)
+                await db.flush()
+            break
+        except IntegrityError:
+            if attempt == max_attempts:
+                raise ConflictError(
+                    "Could not allocate a ticket number after several attempts — please retry"
+                )
     return {"id": str(ticket.id), "ticket_number": ticket_number, "created": True}
 
 @router.patch("/tickets/{ticket_id}")

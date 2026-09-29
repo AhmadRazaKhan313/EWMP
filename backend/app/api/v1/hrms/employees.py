@@ -62,7 +62,7 @@ async def create_employee(
     """
     service = EmployeeService(db, tenant_id)
     employee, temporary_password = await service.create_employee(
-        data, created_by_id=current_user.id
+        data, created_by_id=current_user.id, actor=current_user
     )
     response = {"id": str(employee.id), "employee_code": employee.employee_code}
     if temporary_password:
@@ -153,8 +153,16 @@ async def update_employee(
             "Changing an employee's role requires the 'roles.manage' permission."
         )
 
+    # Same idea for employment_status: moving someone to/from Terminated or
+    # Resigned enables/disables their login, so it needs the offboard permission.
     service = EmployeeService(db, tenant_id)
-    employee = await service.update_employee(employee_id, data, current_user.id)
+    employee = await service.update_employee(
+        employee_id,
+        data,
+        current_user.id,
+        can_manage_exit=current_user.has_permission("employees.delete"),
+        actor=current_user,
+    )
     return {"id": str(employee.id), "updated": True}
 
 
@@ -179,6 +187,7 @@ async def delete_employee(
     tenant_id: UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    from app.repositories.employee import EmployeeRepository
-    repo = EmployeeRepository(db, tenant_id)
-    await repo.delete(employee_id)
+    # Goes through the service so the employee's login is disabled too
+    # (and the owner / yourself can't be deleted by accident).
+    service = EmployeeService(db, tenant_id)
+    await service.delete_employee(employee_id, current_user.id)

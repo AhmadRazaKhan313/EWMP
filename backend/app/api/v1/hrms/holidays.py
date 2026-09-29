@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError
+from app.core.timezones import local_today, org_zone
 from app.models.attendance import Holiday
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
@@ -86,7 +87,8 @@ async def list_holidays(
         filters.append(Holiday.branch_id == None)  # noqa: E711
 
     if upcoming:
-        filters.append(Holiday.date >= datetime.date.today())
+        # "Upcoming" from the organisation's today, not the server's (audit H-1).
+        filters.append(Holiday.date >= local_today(await org_zone(db, tenant_id)))
     if year:
         filters.append(Holiday.date >= datetime.date(year, 1, 1))
         filters.append(Holiday.date <= datetime.date(year, 12, 31))

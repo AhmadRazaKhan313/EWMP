@@ -17,12 +17,17 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.exceptions import EmployeeProfileNotLinkedError, NotFoundError, ValidationError
+from app.core.exceptions import (
+    EmployeeProfileNotLinkedError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
 from app.models.attendance import AttendanceRecord, AttendanceStatus, LeaveRequest, LeaveRequestStatus, LeaveType
 from app.models.employee import Employee, EmploymentStatus
 from app.models.payroll import (
@@ -912,12 +917,63 @@ async def approve_commission(
 
 # ── Reimbursements ────────────────────────────────────────────────────────────
 class ReimbursementCreate(BaseModel):
-    employee_id: UUID
+    # Omit it (or send your own employee id) to claim for yourself. Filing for
+    # anyone else is an admin action — see _resolve_claim_employee.
+    employee_id: UUID | None = None
     category: ReimbursementCategory
-    amount: Decimal
-    description: str | None = None
-    receipt_url: str | None = None
+    # Matches the Numeric(12, 2) column, so an oversized or over-precise
+    # amount is a 422 here instead of a database error (500).
+    amount: Decimal = Field(max_digits=12, decimal_places=2)
+    description: str | None = Field(None, max_length=2000)
+    receipt_url: str | None = Field(None, max_length=500)
     is_taxable: bool = False
+
+    @field_validator("receipt_url")
+    @classmethod
+    def _receipt_url_must_be_http(cls, value: str | None) -> str | None:
+        """Only plain web links. A `javascript:` / `data:` URL stored here
+        becomes script execution the moment any screen renders it as a link."""
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not value.lower().startswith(("https://", "http://")):
+            raise ValueError("receipt_url must be an http(s) link")
+        return value
+
+
+async def _resolve_claim_employee(
+    db: AsyncSession, current_user: User, tenant_id: UUID, requested_id: UUID | None
+) -> Employee:
+    """Whose claim is this? (audit finding H-16)
+
+    Submitting used to accept any employee_id from any logged-in user, with no
+    tenant check — so anyone could file money claims in a colleague's name
+    (or reference another organisation's employee), and once approved they
+    flowed straight into net pay.
+
+      * No employee_id, or the caller's own → the caller's own Employee
+        record (self-service; needs a linked employee profile).
+      * Anyone else → requires `payroll.manage_structure` (the permission that
+        already gates every other on-behalf payroll record: loans, advances,
+        bonuses, arrears) and the employee must exist in THIS organisation.
+    """
+    repo = EmployeeRepository(db, tenant_id)
+    own = await repo.get_by_user_id(current_user.id)
+
+    if requested_id is None or (own is not None and requested_id == own.id):
+        if own is None:
+            raise EmployeeProfileNotLinkedError()
+        return own
+
+    if not current_user.has_permission("payroll.manage_structure"):
+        raise PermissionDeniedError(
+            "Filing a reimbursement for another employee requires the "
+            "'payroll.manage_structure' permission."
+        )
+    target = await repo.get(requested_id)
+    if target is None:
+        raise NotFoundError("Employee not found in this organization")
+    return target
 
 
 def _serialize_reimbursement(r: PayrollReimbursement) -> dict:
@@ -947,6 +1003,35 @@ async def list_reimbursements(
     return {"items": [_serialize_reimbursement(r) for r in items], "total": len(items)}
 
 
+@router.get("/reimbursements/me", summary="List my own reimbursement claims")
+async def list_my_reimbursements(
+    status_filter: ReimbursementStatus | None = Query(None, alias="status"),
+    current_user: User = Depends(get_current_user),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Self-service counterpart to GET /reimbursements (which needs
+    payroll.view and shows everyone's claims). Without it an employee could
+    submit a claim but never see whether it was approved or rejected.
+    Same pattern as /payslips/me: scoped to the caller's own Employee."""
+    own = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
+    if own is None:
+        raise EmployeeProfileNotLinkedError()
+    filters = [
+        PayrollReimbursement.tenant_id == tenant_id,
+        PayrollReimbursement.employee_id == own.id,
+        PayrollReimbursement.is_deleted == False,  # noqa: E712
+    ]
+    if status_filter:
+        filters.append(PayrollReimbursement.status == status_filter)
+    items = (
+        await db.execute(
+            select(PayrollReimbursement).where(*filters).order_by(PayrollReimbursement.submitted_at.desc())
+        )
+    ).scalars().all()
+    return {"items": [_serialize_reimbursement(r) for r in items], "total": len(items)}
+
+
 @router.post("/reimbursements", status_code=status.HTTP_201_CREATED, summary="Submit a reimbursement claim")
 async def submit_reimbursement(
     body: ReimbursementCreate,
@@ -956,8 +1041,9 @@ async def submit_reimbursement(
 ) -> dict:
     if body.amount <= 0:
         raise ValidationError("amount must be positive")
+    employee = await _resolve_claim_employee(db, current_user, tenant_id, body.employee_id)
     reimbursement = PayrollReimbursement(
-        tenant_id=tenant_id, employee_id=body.employee_id, category=body.category, amount=body.amount,
+        tenant_id=tenant_id, employee_id=employee.id, category=body.category, amount=body.amount,
         description=body.description, receipt_url=body.receipt_url, is_taxable=body.is_taxable,
         status=ReimbursementStatus.SUBMITTED,
     )
@@ -1772,8 +1858,17 @@ async def generate_payroll_run(
     """
     from sqlalchemy.orm import selectinload
 
+    # FOR UPDATE (audit H-2): two "Generate" clicks on the same run used to
+    # run side by side and each insert a full set of payslips (doubling the
+    # run's totals). The row lock makes the second wait for the first; it
+    # then sees the run is no longer DRAFT and stops. uq_payslips_one_per_
+    # run_employee is the database-level backstop.
     run = (
-        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+        await db.execute(
+            select(PayrollRun)
+            .where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id)
+            .with_for_update()
+        )
     ).scalar_one_or_none()
     if run is None:
         raise NotFoundError("Payroll run not found")
