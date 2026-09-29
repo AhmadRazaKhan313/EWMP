@@ -13,9 +13,9 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey,
+    Boolean, Date, DateTime, ForeignKey, Index,
     Integer, Numeric, String, Text, JSON,
-    Enum as SAEnum, Float,
+    Enum as SAEnum, Float, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -51,11 +51,20 @@ class AssetStatus(str, enum.Enum):
 
 class Device(TenantModel):
     __tablename__ = "devices"
+    # Serial numbers are unique per organisation among live devices (audit
+    # H-3; migration c4e95883fb29). A decommissioned (soft-deleted) device
+    # doesn't block the same hardware from being enrolled again.
+    __table_args__ = (
+        Index(
+            "uq_devices_tenant_serial_number_active", "tenant_id", "serial_number",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
     # ── Identity ──────────────────────────────────────────────────
     hostname: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     asset_tag: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # ── Agent ─────────────────────────────────────────────────────
@@ -300,14 +309,27 @@ class DeviceAllowedApp(TenantModel):
 
 class Asset(TenantModel):
     __tablename__ = "assets"
+    # Asset tags and serial numbers are unique per organisation among live
+    # assets (audit H-3; migration c4e95883fb29) — two companies can both own
+    # "LAPTOP-001", and a deleted asset's tag can be reused.
+    __table_args__ = (
+        Index(
+            "uq_assets_tenant_asset_tag_active", "tenant_id", "asset_tag",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+        Index(
+            "uq_assets_tenant_serial_number_active", "tenant_id", "serial_number",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    asset_tag: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    asset_tag: Mapped[str] = mapped_column(String(50), nullable=False)
     category: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     sub_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     status: Mapped[AssetStatus] = mapped_column(

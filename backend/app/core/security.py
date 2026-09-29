@@ -34,8 +34,18 @@ def hash_password(plain_password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Return True if plain_password matches the stored hash."""
-    return _pwd_context.verify(plain_password, hashed_password)
+    """Return True if plain_password matches the stored hash.
+
+    A missing or malformed stored hash is treated as "does not match" instead
+    of letting passlib's ValueError escape as an HTTP 500 (a corrupted row must
+    fail closed as a normal login failure, not crash the endpoint).
+    """
+    if not hashed_password:
+        return False
+    try:
+        return _pwd_context.verify(plain_password, hashed_password)
+    except ValueError:
+        return False
 
 
 def needs_rehash(hashed_password: str) -> bool:

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -187,16 +188,13 @@ async def start_session(
     timer into two concurrent sessions."""
     employee_id = await _resolve_own_employee_id(db, tenant_id, current_user)
 
-    existing = (
-        await db.execute(
-            select(WorkSession).where(
-                WorkSession.tenant_id == tenant_id,
-                WorkSession.employee_id == employee_id,
-                WorkSession.status != WorkSessionStatus.ENDED,
-                WorkSession.is_deleted == False,  # noqa: E712
-            )
-        )
-    ).scalar_one_or_none()
+    lookup = select(WorkSession).where(
+        WorkSession.tenant_id == tenant_id,
+        WorkSession.employee_id == employee_id,
+        WorkSession.status != WorkSessionStatus.ENDED,
+        WorkSession.is_deleted == False,  # noqa: E712
+    )
+    existing = (await db.execute(lookup)).scalar_one_or_none()
     if existing is not None:
         completed_minutes, completed_seconds, open_break = await _break_totals(db, existing.id)
         return _serialize(existing, completed_minutes, open_break, completed_seconds)
@@ -207,8 +205,18 @@ async def start_session(
         started_at=datetime.now(UTC),
         status=WorkSessionStatus.ACTIVE,
     )
-    db.add(session)
-    await db.flush()
+    try:
+        # uq_work_sessions_one_active_per_employee (audit H-2). The check
+        # above can't stop two requests arriving together (a double-click);
+        # the index does, and the loser returns the winner's session — the
+        # same answer as the idempotent path above.
+        async with db.begin_nested():
+            db.add(session)
+            await db.flush()
+    except IntegrityError:
+        existing = (await db.execute(lookup)).scalar_one()
+        completed_minutes, completed_seconds, open_break = await _break_totals(db, existing.id)
+        return _serialize(existing, completed_minutes, open_break, completed_seconds)
 
     # Keep the web dashboard's Attendance table in sync — starting the
     # desktop timer should mean today's attendance shows a check-in too,
@@ -264,7 +272,12 @@ async def end_session(
 
     # Same reasoning as start_session above: stopping the desktop timer
     # should also close out today's web attendance record.
-    await ensure_attendance_checked_out(db, tenant_id, employee_id, checked_out_at=now)
+    # Pass the breaks through, so the attendance punch excludes them too
+    # (audit C-4: they were never passed, so attendance counted break time
+    # as work while the desktop timer — correctly — did not).
+    await ensure_attendance_checked_out(
+        db, tenant_id, employee_id, checked_out_at=now, break_minutes=break_minutes
+    )
 
     return _serialize(session, break_minutes, None)
 

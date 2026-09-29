@@ -14,6 +14,7 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -110,6 +111,23 @@ async def _resolve_permissions(
     return list(found)
 
 
+
+# ── Privilege-escalation guards ─────────────────────────────────────────────
+# `roles.manage` is an ordinary, delegable permission. Without these guards
+# anyone holding it could create (or flip an existing role to) `is_super=True`
+# and assign it to themselves, which is full org access. The rules:
+#   * Only a full-access user (platform admin, org owner, or holder of an
+#     `is_super` role) may create / modify / assign / remove / delete a super role.
+#   * Everyone else may only grant permissions they themselves hold.
+# The implementations live in app/permissions/role_guards.py so the employee
+# create/edit flow (which also assigns roles) enforces exactly the same rules.
+from app.permissions.role_guards import (  # noqa: E402
+    held_codenames as _held_codenames,  # noqa: F401 — re-exported; tests/test_roles_escalation.py imports it
+    require_can_grant as _require_can_grant,
+    require_full_access_for_super as _require_full_access_for_super,
+)
+
+
 @router.get("/users/list", summary="List this organization's users (for role assignment)")
 async def list_organization_users(
     current_user: User = Depends(require_permission("roles.manage")),
@@ -189,6 +207,11 @@ async def create_role(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> RoleResponse:
+    # Escalation guards run first, before any DB work.
+    if body.is_super:
+        _require_full_access_for_super(current_user, "create")
+    _require_can_grant(current_user, body.permission_codenames)
+
     slug = _slugify(body.name)
     existing = (
         await db.execute(
@@ -209,8 +232,14 @@ async def create_role(
         is_system=False,  # nothing created through this API is ever a system role
         is_super=body.is_super,
     )
-    db.add(role)
-    await db.flush()
+    try:
+        # uq_roles_org_slug (audit H-2) catches a same-name role created by a
+        # concurrent request between the check above and this insert.
+        async with db.begin_nested():
+            db.add(role)
+            await db.flush()
+    except IntegrityError:
+        raise ConflictError(f"A role named '{body.name}' already exists")
     # Same reasoning as the seed script / AuthService fix: `role` was
     # just constructed and flushed, never queried, so its `permissions`
     # collection is unloaded. Appending to it would trigger an implicit
@@ -265,6 +294,15 @@ async def update_role(
     if role is None:
         raise NotFoundError("Role not found")
 
+    # Escalation guards. Touching a super role, or turning one on, needs full
+    # access; and only permissions being ADDED must be ones the caller holds
+    # (removing permissions is fine — that is what roles.manage is for).
+    if role.is_super or body.is_super:
+        _require_full_access_for_super(current_user, "modify")
+    if body.permission_codenames is not None:
+        currently_granted = {p.codename for p in role.permissions}
+        _require_can_grant(current_user, set(body.permission_codenames) - currently_granted)
+
     if body.name is not None and body.name != role.name:
         new_slug = _slugify(body.name)
         clash = (
@@ -280,6 +318,11 @@ async def update_role(
             raise ConflictError(f"A role named '{body.name}' already exists")
         role.name = body.name
         role.slug = new_slug
+        try:
+            async with db.begin_nested():  # uq_roles_org_slug — concurrent rename
+                await db.flush()
+        except IntegrityError:
+            raise ConflictError(f"A role named '{body.name}' already exists")
 
     if body.description is not None:
         role.description = body.description
@@ -309,6 +352,8 @@ async def delete_role(
     ).scalar_one_or_none()
     if role is None:
         raise NotFoundError("Role not found")
+    if role.is_super:
+        _require_full_access_for_super(current_user, "delete")
 
     user_count = (
         await db.execute(
@@ -348,6 +393,12 @@ async def assign_role(
     if role is None:
         raise NotFoundError("Role not found")
 
+    # Cannot hand out a role that carries more power than the caller has.
+    if role.is_super:
+        _require_full_access_for_super(current_user, "assign")
+    else:
+        _require_can_grant(current_user, role.permission_codenames)
+
     target = (
         await db.execute(
             select(User).where(User.id == user_id, User.organization_id == tenant_id)
@@ -380,6 +431,8 @@ async def unassign_role(
     ).scalar_one_or_none()
     if role is None:
         raise NotFoundError("Role not found")
+    if role.is_super:
+        _require_full_access_for_super(current_user, "remove")
 
     target = (
         await db.execute(
@@ -420,4 +473,4 @@ async def list_role_users(
             for u in role.users
         ],
         "total": len(role.users),
-    }
+    } 

@@ -20,9 +20,9 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey, Integer,
+    Boolean, Date, DateTime, ForeignKey, Index, Integer,
     Numeric, String, Text, Time, JSON,
-    Enum as SAEnum,
+    Enum as SAEnum, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -74,6 +74,13 @@ class LeaveRequestStatus(str, enum.Enum):
 
 class AttendanceRecord(TenantModel):
     __tablename__ = "attendance_records"
+    # One live row per employee per day (audit H-2; migration 1ff3dd1a844a).
+    __table_args__ = (
+        Index(
+            "uq_attendance_records_one_per_day", "tenant_id", "employee_id", "date",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -327,6 +334,13 @@ class LeaveType(TenantModel):
 
 class LeaveBalance(TenantModel):
     __tablename__ = "leave_balances"
+    # One live balance per employee, leave type and year (audit H-2; migration 1ff3dd1a844a).
+    __table_args__ = (
+        Index(
+            "uq_leave_balances_one_per_type_year", "employee_id", "leave_type_id", "year",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

@@ -64,6 +64,7 @@ def _register_routers(app: FastAPI) -> None:
     from app.api.v1.auth.router import router as auth_router
     from app.api.v1.auth.onboarding import router as onboarding_router
     from app.api.v1.auth.admin_setup import router as admin_setup_router
+    from app.api.v1.hrms.organization import router as organization_router
     from app.api.v1.hrms.employees import router as employees_router
     from app.api.v1.hrms.employee_documents import router as employee_documents_router
     from app.api.v1.hrms.roles import router as roles_router
@@ -89,7 +90,7 @@ def _register_routers(app: FastAPI) -> None:
 
     prefix = settings.API_V1_PREFIX
     for r in [
-        auth_router, onboarding_router, admin_setup_router,
+        auth_router, onboarding_router, admin_setup_router, organization_router,
         employees_router, employee_documents_router, roles_router, departments_router, branches_router,
         teams_router, designations_router, shifts_router, holidays_router,
         attendance_router, leave_router, payroll_router,
