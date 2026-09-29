@@ -84,6 +84,12 @@ export const authService = {
     await apiClient.post("/auth/verify-email", { token });
   },
 
+  /** Emails a fresh verification link to the signed-in user. */
+  async resendVerification(): Promise<{ message: string }> {
+    const { data } = await apiClient.post<{ message: string }>("/auth/resend-verification");
+    return data;
+  },
+
   async changePassword(payload: {
     current_password: string;
     new_password: string;

@@ -5,6 +5,7 @@ import { useAuthStore } from "@/store/auth.store";
 import { AppSidebar } from "@/components/organisms/AppSidebar";
 import { AppTopbar } from "@/components/organisms/AppTopbar";
 import { ForcePasswordChangeModal } from "@/components/organisms/ForcePasswordChangeModal";
+import { EmailVerificationBanner } from "@/components/organisms/EmailVerificationBanner";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isInitialized, isLoading, user } = useAuthStore();
@@ -36,10 +37,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <AppSidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <AppTopbar />
+        <EmailVerificationBanner />
         <main className="flex-1 overflow-y-auto px-6 py-6">
           {children}
         </main>
       </div>
+      {/* Was imported but never rendered, so a temporary password was never
+          force-changed. Blocks the app until the user sets their own. */}
+      {user?.must_change_password && <ForcePasswordChangeModal />}
     </div>
   );
 }

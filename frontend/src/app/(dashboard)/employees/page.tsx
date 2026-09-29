@@ -11,7 +11,7 @@ import { EmployeeDrawer } from "@/components/organisms/EmployeeDrawer";
 import { useRouter } from "next/navigation";
 
 const statusConfig: Record<string, { label: string; variant: "success"|"warning"|"error"|"default"|"info" }> = {
-  regular:        { label: "Regular",        variant: "success" },
+  regular:       { label: "Regular",        variant: "success" },
   active:        { label: "Active",        variant: "success" },
   probation:     { label: "Probation",     variant: "info" },
   on_leave:      { label: "On Leave",      variant: "warning" },
