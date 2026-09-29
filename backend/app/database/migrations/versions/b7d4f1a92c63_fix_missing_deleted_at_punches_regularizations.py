@@ -20,11 +20,23 @@ failed with `UndefinedColumnError: column attendance_punches.deleted_at
 does not exist` — surfaced to the browser as a misleading CORS error,
 since an unhandled exception that escapes past CORSMiddleware never gets
 a chance to have CORS headers attached to its response.
+
+IDEMPOTENT ON PURPOSE (edited in place, audit finding C-8): the sibling
+revision c4d8f1a6b3e7 branches from the same parent (a1b2c3d4e5f6) and adds
+the very same column with ADD COLUMN IF NOT EXISTS. On a fresh database
+Alembic runs both branches before the merge (55c41b724a09), and whichever
+of the two ran second used to fail — here, with a plain op.add_column():
+"DuplicateColumnError: column deleted_at of relation attendance_punches
+already exists" — so `alembic upgrade head` could never complete on a new
+install. Editing this revision (instead of adding a new one) is the only
+fix that works: the failure happens before any later revision could run,
+and databases that already applied this revision never execute it again.
+Upgrade and downgrade now use IF [NOT] EXISTS, matching c4d8f1a6b3e7, so
+the two branches can run in either order.
 """
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "b7d4f1a92c63"
@@ -34,16 +46,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "attendance_punches",
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+    op.execute(
+        "ALTER TABLE attendance_punches "
+        "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE"
     )
-    op.add_column(
-        "attendance_regularizations",
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+    op.execute(
+        "ALTER TABLE attendance_regularizations "
+        "ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE"
     )
 
 
 def downgrade() -> None:
-    op.drop_column("attendance_regularizations", "deleted_at")
-    op.drop_column("attendance_punches", "deleted_at")
+    op.execute("ALTER TABLE attendance_regularizations DROP COLUMN IF EXISTS deleted_at")
+    op.execute("ALTER TABLE attendance_punches DROP COLUMN IF EXISTS deleted_at")

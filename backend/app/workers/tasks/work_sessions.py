@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 
-from app.core.database import AsyncSessionLocal
+from app.core.database import worker_db_session
 from app.models.organization import Organization
 from app.models.work_session import BreakRecord, WorkSession, WorkSessionStatus
 from app.services.attendance_sync import ensure_attendance_checked_out
@@ -55,7 +55,7 @@ def _next_local_midnight_utc(started_at: datetime, tz_name: str) -> datetime | N
 
 async def _auto_close_overnight_sessions() -> int:
     closed = 0
-    async with AsyncSessionLocal() as db:
+    async with worker_db_session() as db:
         sessions = (
             await db.execute(
                 select(WorkSession).where(

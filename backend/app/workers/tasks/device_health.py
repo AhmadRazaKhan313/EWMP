@@ -22,7 +22,7 @@ from sqlalchemy import update
 
 from app.workers.celery_app import celery_app
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal
+from app.core.database import worker_db_session
 from app.models.devices import Device, DeviceStatus
 
 logger = logging.getLogger("ewmp.device_health")
@@ -31,7 +31,7 @@ logger = logging.getLogger("ewmp.device_health")
 async def _mark_stale_devices_offline() -> int:
     cutoff = datetime.now(UTC) - timedelta(seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS)
 
-    async with AsyncSessionLocal() as db:
+    async with worker_db_session() as db:
         result = await db.execute(
             update(Device)
             .where(

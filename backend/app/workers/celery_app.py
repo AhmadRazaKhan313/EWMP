@@ -12,10 +12,13 @@ celery_app = Celery(
     "ewmp",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
+    # Every entry here is imported when the worker boots, and a missing
+    # module aborts the boot entirely (ModuleNotFoundError) — which is what
+    # "app.workers.tasks.payroll" and "app.workers.tasks.reports" used to do,
+    # silently disabling every task below. Only list modules that exist;
+    # tests/test_celery_worker_boot.py enforces this.
     include=[
         "app.workers.tasks.email",
-        "app.workers.tasks.payroll",
-        "app.workers.tasks.reports",
         "app.workers.tasks.notifications",
         "app.workers.tasks.device_health",
         "app.workers.tasks.work_sessions",

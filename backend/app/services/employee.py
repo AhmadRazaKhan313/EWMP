@@ -15,11 +15,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
 from app.core.security import generate_password_reset_token, hash_password
 from app.models.employee import Employee, EmploymentStatus, JobNature
+from app.models.organization import Organization
 from app.models.rbac import Role
 from app.models.user import User
+from app.permissions.role_guards import assert_can_assign_role, assert_can_remove_roles
+from app.services.auth import new_email_verification_fields, queue_verification_email
 from app.repositories.employee import EmployeeRepository
 from app.repositories.user import UserRepository
 from app.schemas.employee import (
@@ -29,6 +32,13 @@ from app.schemas.employee import (
     EmployeeListResponse,
     EmployeeUpdateSchema,
 )
+
+
+# Statuses that mean the person no longer works here. While an employee is in
+# one of these their LOGIN must be disabled: before this, offboarding only changed
+# a label on the Employee row and the linked User stayed fully active, so a
+# terminated employee could still sign in, clock in and read payslips.
+_EXITED_STATUSES = (EmploymentStatus.TERMINATED, EmploymentStatus.RESIGNED)
 
 
 class EmployeeService:
@@ -42,6 +52,8 @@ class EmployeeService:
         self,
         data: EmployeeCreateSchema,
         created_by_id: uuid.UUID,
+        *,
+        actor: User,
     ) -> tuple[Employee, str | None]:
         """
         Create a new employee profile, atomically with its linked User account.
@@ -57,6 +69,13 @@ class EmployeeService:
           - data.user_id is None  → create a brand-new User + Employee together.
           - data.user_id is set   → link an existing User to a new Employee
                                      profile (e.g. promoting a contractor).
+
+        `actor` is the user performing the request. The chosen role goes
+        through the same guards as POST /roles/{id}/users/{uid}: only a
+        full-access user may hand out an `is_super` role, and nobody may hand
+        out permissions they don't hold (audit finding C-1 — before this,
+        plain `employees.create` could create an account holding the Owner
+        role and receive its temporary password).
 
         Returns:
             (employee, temporary_password) — temporary_password is only set
@@ -80,6 +99,7 @@ class EmployeeService:
         ).scalar_one_or_none()
         if role is None:
             raise NotFoundError(f"Role {data.role_id} not found in this organization")
+        assert_can_assign_role(actor, role)
 
         if data.user_id is not None:
             # Link an existing user. Load WITH roles so the membership check
@@ -123,6 +143,7 @@ class EmployeeService:
                 is_email_verified=False,
                 must_change_password=True,
                 roles=[role],
+                **new_email_verification_fields(),
             )
             self.db.add(user)
             await self.db.flush()  # assigns user.id, still inside this transaction
@@ -179,11 +200,14 @@ class EmployeeService:
                     )
                 continue
 
-        # Queue welcome email (best-effort — never blocks employee creation)
-        try:
-            from app.workers.tasks.email import send_verification_email  # reuse for now
-        except Exception:
-            pass
+        # A brand-new account (not a linked existing user) needs a way to
+        # verify its email — otherwise, with REQUIRE_EMAIL_VERIFICATION on,
+        # it can never use the app (audit C-3). Queued only now, after the
+        # employee row exists too, so a failed create never emails a link to
+        # a user that was rolled back. Best-effort: never blocks creation;
+        # the user can also hit POST /auth/resend-verification.
+        if temporary_password is not None:
+            queue_verification_email(user.email, user.email_verification_token)
 
         return employee, temporary_password
 
@@ -192,9 +216,17 @@ class EmployeeService:
         employee_id: uuid.UUID,
         data: EmployeeUpdateSchema,
         updated_by_id: uuid.UUID,
+        *,
+        can_manage_exit: bool = False,
+        actor: User | None = None,
     ) -> Employee:
         """
         Partial update. Only provided fields are changed.
+
+        Moving an employee INTO or OUT OF an exited status (terminated/resigned)
+        changes whether they can log in, so it needs `can_manage_exit` (the API
+        passes `employees.delete` — the same permission /offboard needs). It
+        defaults to False so any caller that forgets to decide fails closed.
 
         first_name/last_name are columns on User, not Employee — passing them
         straight to repo.update() used to silently no-op (setattr on an
@@ -206,13 +238,34 @@ class EmployeeService:
         replaces the user's current role set with the single new role
         (see the "exactly one role" model established at creation), rather
         than adding to it, so an employee is never left holding a stale role
-        alongside the new one.
+        alongside the new one. Because it is a grant AND a removal, it goes
+        through both role guards (audit finding C-1): the new role must be
+        one `actor` is allowed to hand out, and any super role being taken
+        away requires a full-access actor. A role change without an `actor`
+        is refused (fails closed).
         """
         employee = await self.repo.get_or_raise(employee_id)
 
         update_data = data.model_dump(exclude_unset=True, exclude_none=False)
         if not update_data:
             return employee
+
+        # Exit-status transition (checked before anything is written).
+        new_status = update_data.get("employment_status")
+        crosses_exit_boundary = False
+        will_be_exited = False
+        if new_status is not None:
+            was_exited = employee.employment_status in _EXITED_STATUSES
+            will_be_exited = new_status in _EXITED_STATUSES
+            crosses_exit_boundary = was_exited != will_be_exited
+            if crosses_exit_boundary:
+                if not can_manage_exit:
+                    raise PermissionDeniedError(
+                        "Moving an employee to or from Terminated/Resigned requires "
+                        "the 'employees.delete' permission (use Offboard)."
+                    )
+                if will_be_exited:
+                    await self._guard_can_disable_login(employee, updated_by_id)
 
         first_name = update_data.pop("first_name", None)
         last_name = update_data.pop("last_name", None)
@@ -236,13 +289,25 @@ class EmployeeService:
                     ).scalar_one_or_none()
                     if role is None:
                         raise NotFoundError(f"Role {role_id} not found in this organization")
+                    if actor is None:
+                        raise PermissionDeniedError(
+                            "Changing an employee's role requires an acting user."
+                        )
+                    assert_can_assign_role(actor, role)
+                    assert_can_remove_roles(
+                        actor, [r for r in user.roles if r.id != role.id]
+                    )
                     user.roles = [role]
                 await self.db.flush()
 
         if not update_data:
             return await self.repo.get_or_raise(employee_id)
 
-        return await self.repo.update(employee_id, update_data)
+        updated = await self.repo.update(employee_id, update_data)
+        if crosses_exit_boundary:
+            # Terminated/resigned -> login off. Rehired -> login back on.
+            await self._set_login_active(employee, active=not will_be_exited)
+        return updated
 
     async def get_employee(self, employee_id: uuid.UUID) -> Employee:
         """Fetch full employee detail with all relations."""
@@ -288,6 +353,60 @@ class EmployeeService:
             total_pages=total_pages,
         )
 
+    # ── Login access follows employment status ──────────────────────────────
+    # Disabling User.is_active is what actually cuts access: login, token refresh
+    # and get_current_user (which reads the DB on every request, so even an
+    # already-issued access token stops working immediately) all reject inactive
+    # users.
+
+    async def _guard_can_disable_login(
+        self, employee: Employee, acting_user_id: uuid.UUID
+    ) -> None:
+        """Refuse the two cases where disabling a login would be a disaster.
+
+        Runs BEFORE anything is changed, so a refusal leaves no partial update.
+        """
+        if employee.user_id == acting_user_id:
+            raise ConflictError(
+                "You cannot offboard or delete your own account. "
+                "Ask another administrator to do it."
+            )
+        owner_id = (
+            await self.db.execute(
+                select(Organization.owner_id).where(Organization.id == self.tenant_id)
+            )
+        ).scalar_one_or_none()
+        if owner_id is not None and owner_id == employee.user_id:
+            raise ConflictError(
+                "This employee is the organization owner. Disabling their login "
+                "would lock everyone out of full administration, so it is not "
+                "allowed."
+            )
+
+    async def _set_login_active(self, employee: Employee, active: bool) -> None:
+        """Enable/disable the login of the User linked to this employee."""
+        user = (
+            await self.db.execute(
+                select(User).where(
+                    User.id == employee.user_id,
+                    User.organization_id == self.tenant_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if user is None or user.is_active == active:
+            return
+        user.is_active = active
+        await self.db.flush()
+
+    async def delete_employee(
+        self, employee_id: uuid.UUID, deleted_by_id: uuid.UUID
+    ) -> None:
+        """Soft-delete an employee AND disable their login (same guards as offboarding)."""
+        employee = await self.repo.get_or_raise(employee_id)
+        await self._guard_can_disable_login(employee, deleted_by_id)
+        await self._set_login_active(employee, False)
+        await self.repo.delete(employee_id)
+
     async def offboard_employee(
         self,
         employee_id: uuid.UUID,
@@ -301,17 +420,17 @@ class EmployeeService:
         """
         employee = await self.repo.get_or_raise(employee_id)
 
-        if employee.employment_status in (
-            EmploymentStatus.TERMINATED,
-            EmploymentStatus.RESIGNED,
-        ):
+        if employee.employment_status in _EXITED_STATUSES:
             raise ConflictError("Employee is already offboarded")
+
+        await self._guard_can_disable_login(employee, offboarded_by_id)
 
         updated = await self.repo.update(employee_id, {
             "employment_status": EmploymentStatus.TERMINATED,
             "date_of_leaving": date_of_leaving,
             "exit_reason": exit_reason,
         })
+        await self._set_login_active(employee, False)
 
         # Trigger offboarding workflow via Celery
         try:

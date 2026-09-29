@@ -26,6 +26,21 @@ Existing data: every current attendance_records row with a check_in is
 backfilled into exactly one punch, so nothing that already happened is
 lost and the derived columns agree with their new source of truth from
 the first deploy.
+
+Fixed in place (see the cast on check_out_source in the backfill INSERT
+below): `attendance_records.check_in_source` and `.check_out_source` were
+declared as two SEPARATE Postgres enum types with identical labels
+(`attendance_source_enum` and `attendance_source_enum2` — an artifact of
+how the initial-schema migration was generated), while both
+`attendance_punches.punch_in_source` and `.punch_out_source` use the
+single `attendance_source_enum` type. Selecting `check_out_source`
+straight into `punch_out_source` is therefore a cross-enum-type mismatch
+that Postgres rejects at plan time — regardless of whether any rows exist
+to migrate. This migration could not previously complete against a real
+Postgres database (a plain `alembic upgrade head` on a fresh instance
+would fail here every time), which is why patching the statement here,
+rather than adding a follow-up migration, is correct: nothing could have
+successfully applied this revision before.
 """
 from typing import Sequence, Union
 
@@ -182,6 +197,8 @@ def upgrade() -> None:
         SELECT
             r.tenant_id, r.id, r.employee_id,
             r.check_in, r.check_out, r.check_in_source,
+            -- Cast across the two distinct-but-identical-labeled enum types
+            -- (see the module docstring above).
             r.check_out_source::text::attendance_source_enum,
             r.check_in_latitude, r.check_in_longitude,
             r.check_out_latitude, r.check_out_longitude,
