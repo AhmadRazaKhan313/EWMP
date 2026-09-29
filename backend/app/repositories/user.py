@@ -110,6 +110,31 @@ class UserRepository(BaseRepository[User]):
             )
         )
 
+    async def clear_expired_lock(self, user_id: uuid.UUID) -> None:
+        """Start a fresh failure count once a lock has run out.
+
+        `record_failed_login` only ever counts up, and the counter is not reset
+        when `locked_until` passes. Without this, a user whose 30 minutes are up
+        would be locked out AGAIN by a single typo (count 5 -> 6 >= 5).
+
+        Like `record_failed_login`, this writes through its own committed session
+        (bug H1): the login request that calls it may fail and roll back, and the
+        reset must survive that. The WHERE clause re-checks expiry so it can never
+        wipe a lock that was applied a moment ago by a concurrent attempt.
+        """
+        from app.core.database import get_db_context
+
+        async with get_db_context() as session:
+            await session.execute(
+                update(User)
+                .where(
+                    User.id == user_id,
+                    User.locked_until.is_not(None),
+                    User.locked_until <= datetime.now(UTC),
+                )
+                .values(failed_login_count=0, locked_until=None)
+            )
+
     async def record_failed_login(self, user_id: uuid.UUID) -> None:
         """Increment the failure counter and lock the account after 5 consecutive
         failures — in a DEDICATED, committed transaction.

@@ -27,6 +27,7 @@ from app.core.exceptions import (
 from app.core.security import (
     create_access_token,
     create_refresh_token,
+    dummy_password_hash,
     generate_email_verification_token,
     generate_password_reset_token,
     hash_password,
@@ -43,6 +44,34 @@ from app.schemas.auth import (
     TokenResponse,
     UserInToken,
 )
+
+
+
+# ── Email verification helpers (shared by every account-creation path) ──────
+
+def new_email_verification_fields() -> dict:
+    """Columns to set on a brand-new, unverified User so they can verify.
+
+    Every place that creates an account (self-registration, POST /employees,
+    POST /auth/register-employee) must use this AND call
+    queue_verification_email() — audit finding C-3: admin-created accounts
+    used to get no token and no email, so with REQUIRE_EMAIL_VERIFICATION on
+    they could never verify, and were locked out of the whole app.
+    """
+    return {
+        "email_verification_token": generate_email_verification_token(),
+        "email_verification_sent_at": datetime.now(UTC),
+    }
+
+
+def queue_verification_email(email: str, token: str) -> None:
+    """Queue the verification email (fire and forget — never fails the
+    request; the user can use POST /auth/resend-verification)."""
+    try:
+        from app.workers.tasks.email import send_verification_email
+        send_verification_email.delay(email, token)
+    except Exception:
+        pass
 
 
 class AuthService:
@@ -130,9 +159,13 @@ class AuthService:
         """
         user = await self.user_repo.get_by_email(data.email)
 
-        # Use a dummy verify to maintain constant-time behavior
+        # Burn the same bcrypt work an existing account would, so response time
+        # does not reveal whether the email exists. This MUST be a real, valid
+        # hash (dummy_password_hash()): the old hand-typed literal was malformed,
+        # so passlib raised ValueError instantly — an unknown email returned a
+        # 500 (not a 401) and was trivially distinguishable by timing.
         if user is None:
-            verify_password("dummy", "$2b$12$dummyhashfortimingattackprevention000000000000")
+            verify_password("dummy", dummy_password_hash())
             raise InvalidCredentialsError()
 
         if not user.password_hash:
@@ -146,16 +179,24 @@ class AuthService:
                 )
             raise AuthenticationError("This account uses a different sign-in method")
 
-        # TEMPORARILY DISABLED (per explicit request, for testing) — the
-        # 30-minute lockout gate. failed_login_count/locked_until are still
-        # being written to by record_failed_login() below, they're just no
-        # longer enforced here. Re-enable by restoring this block:
-        #
-        # if user.is_locked:
-        #     raise AuthenticationError(
-        #         "Account temporarily locked due to too many failed attempts. "
-        #         "Please try again in 30 minutes."
-        #     )
+        # Account lockout: 5 consecutive failures lock the account for 30 minutes
+        # (UserRepository.record_failed_login). Checked BEFORE verifying the
+        # password so a locked account never confirms a correct guess, and burns
+        # no bcrypt time. ON by default; set LOGIN_LOCKOUT_ENABLED=false in a dev
+        # .env to switch it off (no code edits needed).
+        if settings.LOGIN_LOCKOUT_ENABLED and user.locked_until is not None:
+            if user.is_locked:
+                remaining = max(
+                    1, int((user.locked_until - datetime.now(UTC)).total_seconds())
+                )
+                minutes = -(-remaining // 60)  # ceil
+                raise AuthenticationError(
+                    "Account temporarily locked due to too many failed attempts. "
+                    f"Please try again in {minutes} minute{'s' if minutes != 1 else ''}.",
+                    headers={"Retry-After": str(remaining)},
+                )
+            # The lock has expired: give a clean slate (see clear_expired_lock).
+            await self.user_repo.clear_expired_lock(user.id)
 
         if not verify_password(data.password, user.password_hash):
             await self.user_repo.record_failed_login(user.id)
@@ -208,6 +249,17 @@ class AuthService:
             },
         )
 
+    async def resend_verification(self, user: User) -> bool:
+        """Issue a fresh verification token and email it. Returns False when
+        the address is already verified (nothing to send). The previous
+        token stops working — only the newest link is valid."""
+        if user.is_email_verified:
+            return False
+        fields = new_email_verification_fields()
+        await self.user_repo.update(user.id, fields)
+        queue_verification_email(user.email, fields["email_verification_token"])
+        return True
+
     # ── Password reset ────────────────────────────────────────────────────────
 
     async def request_password_reset(self, email: str) -> None:
@@ -245,6 +297,16 @@ class AuthService:
                 "password_reset_expires_at": None,
                 "failed_login_count": 0,
                 "locked_until": None,
+                # The reset link was delivered to this address and opened
+                # from it — that proves inbox ownership exactly as the
+                # verification link does (audit C-3). This is also how a
+                # platform-admin-created organisation owner, who is sent a
+                # reset link, becomes verified.
+                "is_email_verified": True,
+                "email_verification_token": None,
+                # The user just chose this password themselves; there is no
+                # temporary password left to force-change.
+                "must_change_password": False,
             },
         )
 
@@ -325,11 +387,7 @@ class AuthService:
 
     def _queue_verification_email(self, email: str, token: str) -> None:
         """Queue email sending as a Celery task (fire and forget)."""
-        try:
-            from app.workers.tasks.email import send_verification_email
-            send_verification_email.delay(email, token)
-        except Exception:
-            pass  # Don't fail registration if queue is unavailable
+        queue_verification_email(email, token)
 
     def _queue_password_reset_email(self, email: str, token: str) -> None:
         try:

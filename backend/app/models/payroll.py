@@ -23,9 +23,9 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey,
+    Boolean, Date, DateTime, ForeignKey, Index,
     Integer, Numeric, String, Text, JSON,
-    Enum as SAEnum, func,
+    Enum as SAEnum, func, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -471,6 +471,13 @@ class PayrollRun(TenantModel):
 
 class Payslip(TenantModel):
     __tablename__ = "payslips"
+    # One live payslip per employee per payroll run (audit H-2; migration 1ff3dd1a844a).
+    __table_args__ = (
+        Index(
+            "uq_payslips_one_per_run_employee", "payroll_run_id", "employee_id",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
     payroll_run_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

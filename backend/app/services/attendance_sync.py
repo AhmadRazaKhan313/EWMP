@@ -26,19 +26,12 @@ from datetime import UTC, date, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance import AttendanceRecord, AttendanceSource, AttendanceStatus, Shift
 from app.models.employee import Employee
 from app.models.work_session import BreakRecord, WorkSession, WorkSessionStatus
-
-
-def _minutes_late(shift: Shift, check_in_at: datetime) -> int:
-    local_time = check_in_at.time()
-    scheduled_minutes = shift.start_time.hour * 60 + shift.start_time.minute
-    actual_minutes = local_time.hour * 60 + local_time.minute
-    late = actual_minutes - scheduled_minutes - shift.late_grace_minutes
-    return max(0, late)
 
 
 def _scheduled_minutes(shift: Shift) -> int:
@@ -49,21 +42,27 @@ def _scheduled_minutes(shift: Shift) -> int:
     return max(0, end - start - shift.break_duration_minutes)
 
 
+def session_break_minutes(session: WorkSession | None) -> int:
+    """Break time inside an ENDED session: wall time minus the session's
+    break-excluded total. 0 when there is no ended session."""
+    if session is None or session.ended_at is None or session.total_minutes is None:
+        return 0
+    elapsed = int((session.ended_at - session.started_at).total_seconds() // 60)
+    return max(0, elapsed - session.total_minutes)
+
+
 async def ensure_work_session_started(
     db: AsyncSession, tenant_id: UUID, employee_id: UUID, *, started_at: datetime | None = None
 ) -> WorkSession:
     """Idempotent: called when the employee checks in via /attendance (web),
     so the desktop app's timer picks up the same session on its next poll."""
-    existing = (
-        await db.execute(
-            select(WorkSession).where(
-                WorkSession.tenant_id == tenant_id,
-                WorkSession.employee_id == employee_id,
-                WorkSession.status != WorkSessionStatus.ENDED,
-                WorkSession.is_deleted == False,  # noqa: E712
-            )
-        )
-    ).scalar_one_or_none()
+    lookup = select(WorkSession).where(
+        WorkSession.tenant_id == tenant_id,
+        WorkSession.employee_id == employee_id,
+        WorkSession.status != WorkSessionStatus.ENDED,
+        WorkSession.is_deleted == False,  # noqa: E712
+    )
+    existing = (await db.execute(lookup)).scalar_one_or_none()
     if existing is not None:
         return existing
 
@@ -73,8 +72,14 @@ async def ensure_work_session_started(
         started_at=started_at or datetime.now(UTC),
         status=WorkSessionStatus.ACTIVE,
     )
-    db.add(session)
-    await db.flush()
+    try:
+        # uq_work_sessions_one_active_per_employee (audit H-2): a timer
+        # started concurrently from the other app wins; use that one.
+        async with db.begin_nested():
+            db.add(session)
+            await db.flush()
+    except IntegrityError:
+        return (await db.execute(lookup)).scalar_one()
     return session
 
 

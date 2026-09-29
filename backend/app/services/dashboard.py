@@ -12,11 +12,12 @@ dashboard fire six separate list-endpoint requests just to read `.total`
 off each — cheaper for both the client and the DB.
 """
 
-from datetime import date
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.timezones import local_today, org_zone
 
 from app.models.attendance import AttendanceRecord, AttendanceStatus, LeaveRequest, LeaveRequestStatus
 from app.models.devices import Asset, AssetStatus, Device, DeviceStatus
@@ -25,7 +26,8 @@ from app.models.helpdesk import SupportTicket, TicketStatus
 
 
 async def get_dashboard_stats(db: AsyncSession, tenant_id: UUID) -> dict:
-    today = date.today()
+    # The organisation's "today", not the server's (audit H-1).
+    today = local_today(await org_zone(db, tenant_id))
 
     total_employees = (
         await db.execute(

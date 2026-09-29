@@ -19,7 +19,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -35,6 +35,13 @@ class WorkSessionStatus(str, enum.Enum):
 
 class WorkSession(TenantModel):
     __tablename__ = "work_sessions"
+    # At most one running (not ENDED) timer per employee (audit H-2; migration 1ff3dd1a844a).
+    __table_args__ = (
+        Index(
+            "uq_work_sessions_one_active_per_employee", "employee_id",
+            unique=True, postgresql_where=text("status <> 'ENDED' AND is_deleted = false"),
+        ),
+    )
 
     employee_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
