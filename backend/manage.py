@@ -9,6 +9,7 @@ Usage:
     python manage.py attendance-cutoff    # Force-close stale punches (run hourly)
 """
 
+import utils.session
 import asyncio
 import argparse
 import sys
