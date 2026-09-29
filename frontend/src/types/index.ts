@@ -60,6 +60,9 @@ export interface MeResponse {
   has_full_access: boolean;
   has_employee_profile: boolean;
   must_change_password: boolean;
+  is_email_verified: boolean;
+  /** False when the server doesn't enforce verification (dev) or for platform admins. */
+  email_verification_required: boolean;
   preferences: Record<string, unknown>;
 }
 
