@@ -49,6 +49,22 @@ from app.models.attendance import (
 )
 from app.services.attendance_punches import compute_cutoff_at, get_open_punch
 
+
+@pytest.fixture(autouse=True)
+def _org_timezone_is_utc(monkeypatch):
+    """The code under test now looks up the organisation's timezone first
+    (audit H-1). This fake session only answers the queries this module is
+    about, so stub that one lookup to UTC — the behaviour these tests were
+    written against. Timezone handling itself is covered by
+    tests/test_org_local_time_postgres.py."""
+    from app.core.timezones import UTC_ZONE
+
+    async def _utc(db, tenant_id):
+        return UTC_ZONE
+
+    for module in ("app.api.v1.hrms.attendance", "app.services.attendance_punches"):
+        monkeypatch.setattr(module + ".org_zone", _utc)
+
 TENANT = uuid.uuid4()
 EMP_ID = uuid.uuid4()
 
@@ -73,6 +89,18 @@ class _FakeDB:
 
     def add(self, obj):
         self.added.append(obj)
+
+    def begin_nested(self):
+        """Stand-in for AsyncSession.begin_nested() — the SAVEPOINT the
+        create paths now use for race safety (audit H-2). No concurrent
+        writer exists in a fake, so it never rolls back."""
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _savepoint():
+            yield
+
+        return _savepoint()
 
     async def flush(self):
         for obj in self.added:
@@ -229,6 +257,18 @@ class _CapturingDB:
             self.captured_stmt = stmt
             return self._first_result
         return _FakeResult(scalar=None)
+
+    def begin_nested(self):
+        """Stand-in for AsyncSession.begin_nested() — the SAVEPOINT the
+        create paths now use for race safety (audit H-2). No concurrent
+        writer exists in a fake, so it never rolls back."""
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _savepoint():
+            yield
+
+        return _savepoint()
 
     async def flush(self):
         pass

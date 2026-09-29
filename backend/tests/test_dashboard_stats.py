@@ -18,6 +18,22 @@ import pytest
 
 from app.services.dashboard import get_dashboard_stats
 
+
+@pytest.fixture(autouse=True)
+def _org_timezone_is_utc(monkeypatch):
+    """The code under test now looks up the organisation's timezone first
+    (audit H-1). This fake session only answers the queries this module is
+    about, so stub that one lookup to UTC — the behaviour these tests were
+    written against. Timezone handling itself is covered by
+    tests/test_org_local_time_postgres.py."""
+    from app.core.timezones import UTC_ZONE
+
+    async def _utc(db, tenant_id):
+        return UTC_ZONE
+
+    for module in ("app.services.dashboard",):
+        monkeypatch.setattr(module + ".org_zone", _utc)
+
 TENANT = uuid.uuid4()
 
 

@@ -33,6 +33,7 @@ Run:  cd backend && pytest tests/test_employee_code_uniqueness.py -v
 import asyncio
 import os
 import uuid
+from types import SimpleNamespace
 from datetime import date
 
 import pytest
@@ -210,7 +211,12 @@ class TestConcurrentCreateEmployeeRetries:
                     email=f"{email_prefix}-{uuid.uuid4().hex[:8]}@example.com",
                     date_of_joining=date(2026, 1, 1), role_id=role_id,
                 )
-                employee, _ = await service.create_employee(data, created_by_id=uuid.uuid4())
+                # A full-access actor: this test is about code uniqueness, not
+                # role-grant permissions (those are in test_employee_role_escalation_postgres.py).
+                actor = SimpleNamespace(has_full_access=True, roles=[])
+                employee, _ = await service.create_employee(
+                    data, created_by_id=uuid.uuid4(), actor=actor
+                )
                 code = employee.employee_code  # capture before commit expires attributes
                 await session.commit()
                 return code
