@@ -84,7 +84,7 @@ function RoleFormModal({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Recruiter, Payroll Admin, Team Lead…"
-              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
+              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]"
             />
           </div>
 
@@ -94,7 +94,7 @@ function RoleFormModal({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What is this role for?"
-              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]"
+              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]"
             />
           </div>
 
