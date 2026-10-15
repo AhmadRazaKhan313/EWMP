@@ -33,6 +33,7 @@ def _error_response(
     error_code: str,
     message: str,
     detail: Any = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None)
     return JSONResponse(
@@ -43,6 +44,7 @@ def _error_response(
             "detail": detail,
             "request_id": request_id,
         },
+        headers=headers,
     )
 
 
@@ -54,6 +56,9 @@ async def ewmp_exception_handler(request: Request, exc: EWMPException) -> JSONRe
         error_code=exc.error_code,
         message=exc.message,
         detail=exc.detail,
+        # EWMPException has always carried `headers`, but they were dropped here,
+        # so e.g. `Retry-After` on a 429 never reached the client.
+        headers=exc.headers,
     )
 
 

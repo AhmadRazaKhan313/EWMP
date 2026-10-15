@@ -122,3 +122,41 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+
+# ── Session for Celery tasks ─────────────────────────────────────────────────
+@asynccontextmanager
+async def worker_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Session for Celery tasks. Use this instead of AsyncSessionLocal /
+    get_db_context inside any task body.
+
+    Celery tasks are synchronous functions that each call asyncio.run(),
+    which creates a NEW event loop per task run and closes it afterwards.
+    The module-level `engine` pools asyncpg connections, and every pooled
+    connection is bound to the loop it was opened on. Reusing one from the
+    next asyncio.run() fails ("got Future attached to a different loop" /
+    "Event loop is closed") — so in a worker process every second run of a
+    task crashed.
+
+    This builds a short-lived engine with NullPool inside the current loop
+    and disposes it on exit, so no connection ever outlives its loop. One
+    extra connect per task run is negligible for periodic jobs.
+
+    Unlike get_db_context this does NOT auto-commit: tasks commit explicitly
+    (as they already do). Anything uncommitted is rolled back on exit.
+    """
+    from sqlalchemy.pool import NullPool
+
+    worker_engine = create_async_engine(_async_db_url, poolclass=NullPool)
+    try:
+        async with AsyncSession(
+            worker_engine, expire_on_commit=False, autoflush=False
+        ) as session:
+            try:
+                yield session
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        await worker_engine.dispose()

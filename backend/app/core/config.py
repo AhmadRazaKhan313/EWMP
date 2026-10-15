@@ -7,10 +7,10 @@ refuse to start if a required variable is missing or malformed.
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import AnyHttpUrl, PostgresDsn, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -33,10 +33,35 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # Refresh tokens rotate (each use issues a new one), so without a cap a
+    # session could slide forever. This is the ABSOLUTE lifetime of a login:
+    # after this many days the user signs in again no matter how active they
+    # are. (audit H-6)
+    REFRESH_SESSION_MAX_DAYS: int = 30
+    # Hard cap on how long a request may wait for the Celery broker when it
+    # queues the verification email. Queueing is best-effort; a slow or
+    # unreachable broker used to hold the whole response (create-employee,
+    # register, resend) for ~20s+ while the row had already been written.
+    EMAIL_QUEUE_TIMEOUT_SECONDS: float = 2.0
+    # A rotated refresh token that is presented again is treated as theft and
+    # kills the whole session -- except within this many seconds of its use,
+    # where it is almost certainly a client firing two refreshes at once.
+    REFRESH_REUSE_GRACE_SECONDS: int = 10
     ENCRYPTION_KEY: str  # 32-byte key for field-level encryption
 
     # ── CORS ─────────────────────────────────────────────────────
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
+    # NoDecode: pydantic-settings normally tries its own json.loads() on any
+    # env var feeding a list[str] field BEFORE parse_cors_origins() below ever
+    # runs — and raises SettingsError immediately if that isn't byte-perfect
+    # JSON, meaning the comma-separated fallback that validator implements
+    # was unreachable dead code. This was invisible with a hand-written
+    # (LF-only, no stray bytes) JSON array in .env, but broke the moment the
+    # value picked up so much as a trailing character (e.g. a Windows \r, or
+    # docker-compose's own ${VAR} substitution reformatting it) — or if
+    # anyone wrote a comma-separated value the way the validator's docstring
+    # says is supported. NoDecode hands the raw string straight to the
+    # validator instead, so it decides how to parse it.
+    ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
 
     # ── Database ─────────────────────────────────────────────────
     DATABASE_URL: PostgresDsn
@@ -58,6 +83,13 @@ class Settings(BaseSettings):
     S3_ENDPOINT_URL: str = ""  # For MinIO / Cloudflare R2
     STORAGE_LOCAL_DIR: str = "storage/uploads"  # Used when STORAGE_BACKEND=local
     MAX_DOCUMENT_UPLOAD_MB: int = 15
+    # Desktop-agent credentials (audit H-12). A per-device agent token used to
+    # last 10 years and could never be replaced. Now it lasts this long, and the
+    # server hands the agent a fresh one (inside a heartbeat reply) once the
+    # current one is older than ROTATE_AFTER days; the old token keeps working
+    # until the agent proves it has adopted the new one.
+    AGENT_TOKEN_EXPIRE_DAYS: int = 90
+    AGENT_TOKEN_ROTATE_AFTER_DAYS: int = 30
 
     # ── Device Activity Watchlist ────────────────────────────────────
     # Default set of domains/app-window-title keywords the agent flags as
@@ -86,8 +118,26 @@ class Settings(BaseSettings):
     DEVICE_HEARTBEAT_INTERVAL_SECONDS: int = 60
     DEVICE_OFFLINE_AFTER_SECONDS: int = 180
 
+    # ── Automatic screenshots ────────────────────────────────────────
+    # While a device is connected (heartbeating), the heartbeat reply asks the
+    # agent for a screenshot whenever the newest one for that device is older
+    # than DEVICE_AUTO_SCREENSHOT_INTERVAL_SECONDS. No new agent code is
+    # needed — the desktop app already fulfils "screenshot" actions. Because
+    # the request rides on the heartbeat, the real cadence is
+    # max(interval, heartbeat interval). Set the flag to False to go back to
+    # on-demand-only. Old captures are purged after
+    # DEVICE_SCREENSHOT_RETENTION_DAYS so the table/storage don't grow forever
+    # (one capture a minute is ~1,440 files per device per day).
+    DEVICE_AUTO_SCREENSHOT_ENABLED: bool = True
+    DEVICE_AUTO_SCREENSHOT_INTERVAL_SECONDS: int = 60
+    DEVICE_SCREENSHOT_RETENTION_DAYS: int = 7
+
     # ── Email ────────────────────────────────────────────────────
-    SMTP_HOST: str = "smtp.gmail.com"
+    # Brevo's free tier (300 emails/day, no card required) — see .env for
+    # the signup + SMTP-key setup steps. SMTP_USER/PASSWORD still need to
+    # be filled in per-environment; this default only saves re-typing the
+    # host/port every time.
+    SMTP_HOST: str = "smtp-relay.brevo.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
@@ -107,8 +157,34 @@ class Settings(BaseSettings):
     SUPER_ADMIN_PASSWORD: str
 
     # ── Rate Limiting ─────────────────────────────────────────────
-    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 100
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 100  # reserved (no global limiter yet)
+    # Per-IP cap for the low-volume public endpoints that send email or create
+    # accounts: /auth/register, /forgot-password, /reset-password, /verify-email.
     RATE_LIMIT_AUTH_REQUESTS_PER_MINUTE: int = 10
+    # /auth/login is limited on two axes. Per-IP is deliberately generous: a whole
+    # office often shares ONE public IP (NAT) and signs in around the same minute.
+    # Per-email is tight: it is what actually stops password guessing on an account.
+    RATE_LIMIT_LOGIN_PER_IP_PER_MINUTE: int = 30
+    RATE_LIMIT_LOGIN_PER_EMAIL_PER_MINUTE: int = 5
+    # Password-reset emails per address per HOUR (stops inbox-bombing a victim).
+    RATE_LIMIT_FORGOT_PASSWORD_PER_EMAIL_PER_HOUR: int = 3
+    # Master switch (set false only for local debugging / load tests).
+    RATE_LIMIT_ENABLED: bool = True
+
+    # ── Account lockout ───────────────────────────────────────────
+    # 5 consecutive failures lock the account for 30 minutes (see
+    # UserRepository.record_failed_login). ON by default; the gate used to be
+    # commented out "for testing" — set LOGIN_LOCKOUT_ENABLED=false in a dev
+    # .env instead of editing code.
+    LOGIN_LOCKOUT_ENABLED: bool = True
+
+    # ── Reverse proxy ─────────────────────────────────────────────
+    # How many trusted reverse proxies sit in front of the API (0 = none; the API
+    # is reached directly, e.g. docker-compose port 8000). Only when > 0 is the
+    # X-Forwarded-For header believed — otherwise any client could forge it to
+    # dodge per-IP rate limits and spoof `last_login_ip`. Behind the bundled
+    # nginx (which appends the real client IP) set this to 1.
+    TRUSTED_PROXY_COUNT: int = 0
 
     # ── Agent Communication ───────────────────────────────────────
     AGENT_SECRET_KEY: str  # Shared secret for desktop agent auth
@@ -145,11 +221,41 @@ class Settings(BaseSettings):
     # per-user bypass, this is a single org-wide switch.
     REQUIRE_EMAIL_VERIFICATION: bool = True
 
+    # Public base URL of the web app. Every link inside an email (verify
+    # email, reset password, invite) is built from it, so it MUST match where
+    # the frontend is actually served — e.g. https://hr.yourcompany.com in
+    # production. Links used to be hardcoded to https://app.ewmp.io, which
+    # made verification impossible on any other domain (including localhost).
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    @field_validator("FRONTEND_URL")
+    @classmethod
+    def _strip_frontend_url(cls, v: str) -> str:
+        return v.strip().rstrip("/")
+
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
+        """Accepts either a JSON array ('["a","b"]') or a plain
+        comma-separated list ('a,b') — and is defensive about whitespace and
+        stray \\r (a Windows-edited .env, or docker-compose's own ${VAR}
+        substitution, can both add bytes a strict json.loads() rejects)."""
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
+            v = v.strip()
+            if v.startswith("["):
+                try:
+                    import json
+
+                    parsed = json.loads(v)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"ALLOWED_ORIGINS looks like a JSON array but failed to "
+                        f"parse: {exc}. Value was: {v!r}"
+                    ) from exc
+                if not isinstance(parsed, list) or not all(isinstance(x, str) for x in parsed):
+                    raise ValueError("ALLOWED_ORIGINS JSON array must contain only strings")
+                return [origin.strip() for origin in parsed]
+            return [origin.strip() for origin in v.split(",") if origin.strip()]
         return v
 
     @model_validator(mode="after")

@@ -1,7 +1,7 @@
 """Model registry — all models imported for Alembic autogenerate."""
 from app.models.base import Base, TenantModel, PlatformModel  # noqa: F401
 from app.models.organization import Organization  # noqa: F401
-from app.models.user import User, user_roles  # noqa: F401
+from app.models.user import RefreshSession, User, user_roles  # noqa: F401
 from app.models.rbac import Role, Permission, role_permissions  # noqa: F401
 from app.models.employee import Employee  # noqa: F401
 from app.models.documents import EmployeeDocument  # noqa: F401

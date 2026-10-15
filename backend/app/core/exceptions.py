@@ -93,6 +93,15 @@ class AccountDisabledError(EWMPException):
     message = "Your account has been disabled"
 
 
+class PasswordChangeRequiredError(EWMPException):
+    """The account is on a temporary password; only the change-password
+    flow may be used until it has been replaced (audit H-6)."""
+
+    status_code = 403
+    error_code = "PASSWORD_CHANGE_REQUIRED"
+    message = "You must change your temporary password before continuing"
+
+
 class EmailNotVerifiedError(EWMPException):
     status_code = 403
     error_code = "EMAIL_NOT_VERIFIED"
@@ -114,6 +123,39 @@ class UserNotFoundError(NotFoundError):
 class OrganizationNotFoundError(NotFoundError):
     error_code = "ORGANIZATION_NOT_FOUND"
     message = "Organization not found"
+
+
+class EmployeeProfileNotLinkedError(NotFoundError):
+    """The authenticated user has no linked Employee row.
+
+    Raised by every self-service HRMS endpoint (work sessions, attendance,
+    leave, payroll) at the exact same point: `EmployeeRepository.
+    get_by_user_id(current_user.id)` returns None. Previously each call
+    site raised a bare NotFoundError with its own slightly different
+    message ("No employee profile is linked to this user" in some places,
+    "Employee profile not found for this user" in others) — same 404
+    status and same generic "NOT_FOUND" error_code in every case, so no
+    client could reliably tell this ONE specific, common, and genuinely
+    actionable condition apart from any other 404.
+
+    It happens whenever a User account exists and can log in, but no
+    Employee profile has been linked to it yet — most commonly the
+    two-step onboarding flow (POST /auth/register-employee creates the
+    login account; a follow-up POST /employees with that user_id is
+    what creates and links the Employee profile) only completed its
+    first step. A brand-new organization's very first non-admin hire is
+    exactly the case most likely to hit this, since it's the first time
+    that two-step flow has been exercised for that org.
+
+    A distinct error_code lets any client (desktop or web) show a
+    specific, actionable message — "ask your admin to finish linking
+    your employee profile" — instead of a generic, unhelpful one.
+    """
+    error_code = "EMPLOYEE_PROFILE_NOT_LINKED"
+    message = (
+        "Your account isn't linked to an employee profile yet. "
+        "Ask your HR admin to finish setting up your employee record."
+    )
 
 
 # ── 409 Conflict ──────────────────────────────────────────────────────────────

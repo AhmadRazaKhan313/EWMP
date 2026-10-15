@@ -34,8 +34,18 @@ def hash_password(plain_password: str) -> str:
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Return True if plain_password matches the stored hash."""
-    return _pwd_context.verify(plain_password, hashed_password)
+    """Return True if plain_password matches the stored hash.
+
+    A missing or malformed stored hash is treated as "does not match" instead
+    of letting passlib's ValueError escape as an HTTP 500 (a corrupted row must
+    fail closed as a normal login failure, not crash the endpoint).
+    """
+    if not hashed_password:
+        return False
+    try:
+        return _pwd_context.verify(plain_password, hashed_password)
+    except ValueError:
+        return False
 
 
 def needs_rehash(hashed_password: str) -> bool:
@@ -97,21 +107,35 @@ def create_access_token(
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
-def create_refresh_token(subject: str | int) -> str:
+def create_refresh_token(
+    subject: str | int,
+    *,
+    jti: str | None = None,
+    family_id: str | None = None,
+    expires_at: datetime | None = None,
+) -> str:
     """
     Create a long-lived JWT refresh token.
 
-    Refresh tokens carry minimal claims — only sub and type.
-    They are used exclusively to mint new access tokens.
+    Refresh tokens carry minimal claims -- sub, type, jti and the session
+    ("fam") they belong to. They are used exclusively to mint new access
+    tokens. The jti is what the server tracks (app.models.user.RefreshSession)
+    so a token can be single-use and a whole session revocable (audit H-6).
+    `expires_at` lets the caller clamp the token to the session's absolute
+    end; it defaults to REFRESH_TOKEN_EXPIRE_DAYS from now.
     """
-    expire = datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = expires_at or (
+        datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    )
     payload: dict[str, Any] = {
         "sub": str(subject),
         "exp": expire,
         "iat": datetime.now(UTC),
         "type": "refresh",
-        "jti": secrets.token_hex(16),  # Unique ID for revocation support
+        "jti": jti or secrets.token_hex(16),
     }
+    if family_id:
+        payload["fam"] = family_id
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -194,10 +218,13 @@ def create_agent_token(device_id: str) -> str:
     """
     Create a long-lived JWT for the desktop agent.
 
-    Agent tokens never expire (exp is set far in the future) because
-    agents run unattended. Rotation is handled via the device management UI.
+    Lasts AGENT_TOKEN_EXPIRE_DAYS (it used to be 10 years). Agents run
+    unattended, so they are not asked to sign in again: the heartbeat reply
+    carries a replacement before this one runs out (see
+    agent_token_needs_rotation) and get_current_device only honours the token
+    whose hash is stored on the device, so a replaced or revoked token is dead.
     """
-    expire = datetime.now(UTC) + timedelta(days=365 * 10)
+    expire = datetime.now(UTC) + timedelta(days=settings.AGENT_TOKEN_EXPIRE_DAYS)
     payload: dict[str, Any] = {
         "sub": device_id,
         "exp": expire,
@@ -221,6 +248,27 @@ def verify_agent_token(token: str) -> dict[str, Any]:
     if payload.get("type") != "agent":
         raise ValueError("Token is not an agent token")
     return payload
+
+
+def hash_agent_token(token: str) -> str:
+    """SHA-256 of an agent token -- what Device.agent_token_hash stores."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def agent_token_needs_rotation(payload: dict[str, Any]) -> bool:
+    """True when an (already verified) agent token should be replaced: it is
+    older than AGENT_TOKEN_ROTATE_AFTER_DAYS, or it is a legacy token minted
+    when they were valid for 10 years."""
+    now = datetime.now(UTC)
+    iat, exp = payload.get("iat"), payload.get("exp")
+    if iat is None or exp is None:
+        return True
+    if now - datetime.fromtimestamp(int(iat), UTC) > timedelta(
+        days=settings.AGENT_TOKEN_ROTATE_AFTER_DAYS
+    ):
+        return True
+    lifetime = datetime.fromtimestamp(int(exp), UTC) - datetime.fromtimestamp(int(iat), UTC)
+    return lifetime > timedelta(days=settings.AGENT_TOKEN_EXPIRE_DAYS + 1)
 
 
 def create_device_enrollment_token(tenant_id: str, valid_days: int = 365) -> str:
