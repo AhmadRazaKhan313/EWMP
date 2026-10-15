@@ -60,4 +60,36 @@ describe("applyTrayStatus", () => {
     expect(onOpen).toHaveBeenCalledTimes(1);
     expect(onQuit).toHaveBeenCalledTimes(1);
   });
+
+  it("appends an unread count to the tooltip when unreadCount > 0", () => {
+    const tray = fakeTray();
+    applyTrayStatus(tray as never, "active", { onOpen: vi.fn(), onQuit: vi.fn() }, 3);
+    expect(tray.setToolTip).toHaveBeenCalledWith("EWMP — Checked in — working — 3 new");
+  });
+
+  it("omits the unread suffix entirely when unreadCount is 0 (default)", () => {
+    const tray = fakeTray();
+    applyTrayStatus(tray as never, "idle", { onOpen: vi.fn(), onQuit: vi.fn() }, 0);
+    expect(tray.setToolTip).toHaveBeenCalledWith("EWMP — Not checked in");
+  });
+
+  it("adds a disabled unread-notifications row to the context menu when unreadCount > 0", () => {
+    const tray = fakeTray();
+    applyTrayStatus(tray as never, "idle", { onOpen: vi.fn(), onQuit: vi.fn() }, 2);
+    const [{ __template: template }] = tray.setContextMenu.mock.calls[0] as [
+      { __template: Array<Record<string, unknown>> },
+    ];
+    expect(template).toContainEqual(
+      expect.objectContaining({ label: "🔔 2 unread notifications", enabled: false }),
+    );
+  });
+
+  it("does not add an unread row when unreadCount is 0", () => {
+    const tray = fakeTray();
+    applyTrayStatus(tray as never, "idle", { onOpen: vi.fn(), onQuit: vi.fn() });
+    const [{ __template: template }] = tray.setContextMenu.mock.calls[0] as [
+      { __template: Array<Record<string, unknown>> },
+    ];
+    expect(template.some((item) => String(item.label ?? "").includes("unread"))).toBe(false);
+  });
 });

@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC_CHANNELS } from "@shared/ipcChannels";
 import type { SecureStoreKey } from "@shared/secureStore";
-import type { HardwareInfo, TrayIconStatus } from "@shared/deviceTypes";
+import type { HardwareInfo, TrayIconStatus, CapturedScreenshot, WatchlistAlert } from "@shared/deviceTypes";
 
 /**
  * This is the ONLY code that runs with access to both Node APIs (ipcRenderer)
@@ -25,10 +25,42 @@ export interface EwmpBridge {
   };
   device: {
     getHardwareInfo: () => Promise<HardwareInfo>;
+    captureScreenshot: () => Promise<CapturedScreenshot>;
+  };
+  activity: {
+    start: () => Promise<void>;
+    stop: () => Promise<void>;
+    setWatchlist: (terms: string[]) => Promise<void>;
+    drainAlerts: () => Promise<WatchlistAlert[]>;
   };
   tray: {
     setStatus: (status: TrayIconStatus) => Promise<void>;
     setTooltip: (text: string) => Promise<void>;
+    setBadgeCount: (count: number) => Promise<void>;
+  };
+  widget: {
+    /** Shows the floating desktop widget if hidden, hides it if shown —
+     * also reachable from the tray's "Show/Hide Floating Widget" item.
+     * Returns the new visibility. */
+    toggle: () => Promise<boolean>;
+    /** Called from the widget window's own close button — hides rather
+     * than destroys it, same minimize-to-tray philosophy as the main
+     * window, so re-toggling doesn't need to recreate/reload it. */
+    hide: () => Promise<void>;
+    isVisible: () => Promise<boolean>;
+    /** Brings the main app window to the front (the widget's "Open app"
+     * button, shown when nobody is signed in yet). */
+    openApp: () => Promise<void>;
+    /** A real minimize: the widget stays in the taskbar and can be restored
+     * from there. (hide() is the close/X: it goes to the tray.) */
+    minimize: () => Promise<void>;
+  };
+  /** Attendance changes made in one window reach the others immediately. */
+  attendance: {
+    /** Tell the other windows the attendance state just changed on the server. */
+    notifyChanged: () => void;
+    /** Be told when ANOTHER window changed it. Returns the unsubscribe function. */
+    onChanged: (listener: () => void) => () => void;
   };
 }
 
@@ -50,10 +82,41 @@ const ewmpBridge: EwmpBridge = {
   },
   device: {
     getHardwareInfo: (): Promise<HardwareInfo> => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_GET_HARDWARE_INFO),
+    captureScreenshot: (): Promise<CapturedScreenshot> =>
+      ipcRenderer.invoke(IPC_CHANNELS.DEVICE_CAPTURE_SCREENSHOT),
+  },
+  activity: {
+    start: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.ACTIVITY_START),
+    stop: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.ACTIVITY_STOP),
+    setWatchlist: (terms: string[]): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.ACTIVITY_SET_WATCHLIST, terms),
+    drainAlerts: (): Promise<WatchlistAlert[]> => ipcRenderer.invoke(IPC_CHANNELS.ACTIVITY_DRAIN_ALERTS),
   },
   tray: {
     setStatus: (status: TrayIconStatus): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.TRAY_SET_STATUS, status),
     setTooltip: (text: string): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.TRAY_SET_TOOLTIP, text),
+    setBadgeCount: (count: number): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNELS.TRAY_SET_BADGE_COUNT, count),
+  },
+  widget: {
+    toggle: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_TOGGLE),
+    hide: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_HIDE),
+    isVisible: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_IS_VISIBLE),
+    openApp: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_OPEN_APP),
+    minimize: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_MINIMIZE),
+  },
+  attendance: {
+    notifyChanged: (): void => ipcRenderer.send(IPC_CHANNELS.ATTENDANCE_NOTIFY_CHANGED),
+    onChanged: (listener: () => void): (() => void) => {
+      // One handler per subscription, removed by exactly the function we hand
+      // back, so a component that unmounts (or React StrictMode's double
+      // mount) never leaves a stale listener behind.
+      const handler = (): void => listener();
+      ipcRenderer.on(IPC_CHANNELS.ATTENDANCE_CHANGED, handler);
+      return (): void => {
+        ipcRenderer.removeListener(IPC_CHANNELS.ATTENDANCE_CHANGED, handler);
+      };
+    },
   },
 };
 

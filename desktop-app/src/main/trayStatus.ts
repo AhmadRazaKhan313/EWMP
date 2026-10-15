@@ -17,19 +17,36 @@ export { TRAY_STATUS_LABEL };
  * mirrors whatever the Check-In widget currently shows, so glancing at
  * the tray answers "am I clocked in right now?" without opening the
  * window.
+ *
+ * `unreadCount` (default 0) is passed separately from the status change
+ * that triggers this — see main/index.ts's TRAY_SET_BADGE_COUNT handler,
+ * which re-calls this with the LAST KNOWN status so a new notification
+ * arriving doesn't require (and doesn't wait for) a check-in/out to show
+ * up in the tray.
  */
 export function applyTrayStatus(
   tray: Tray,
   status: TrayIconStatus,
-  handlers: { onOpen: () => void; onQuit: () => void },
+  handlers: { onOpen: () => void; onQuit: () => void; onToggleWidget?: () => void },
+  unreadCount = 0,
+  widgetVisible = false,
 ): void {
+  const suffix = unreadCount > 0 ? ` — ${unreadCount} new` : "";
   tray.setImage(getTrayIcon(status));
-  tray.setToolTip(`EWMP — ${TRAY_STATUS_LABEL[status]}`);
+  tray.setToolTip(`EWMP — ${TRAY_STATUS_LABEL[status]}${suffix}`);
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: TRAY_STATUS_LABEL[status], enabled: false },
+      ...(unreadCount > 0
+        ? [{ label: `🔔 ${unreadCount} unread notification${unreadCount === 1 ? "" : "s"}`, enabled: false }]
+        : []),
       { type: "separator" },
       { label: "Open EWMP", click: handlers.onOpen },
+      {
+        label: widgetVisible ? "Hide Floating Widget" : "Show Floating Widget",
+        click: handlers.onToggleWidget,
+        enabled: !!handlers.onToggleWidget,
+      },
       { type: "separator" },
       { label: "Quit", click: handlers.onQuit },
     ]),
