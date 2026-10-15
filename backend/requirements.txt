@@ -58,4 +58,5 @@ pytest>=8.3.3
 pytest-asyncio>=0.24.0
 factory-boy>=3.3.1
 aiosqlite>=0.20.0  # in-memory async DB for ORM-mechanics tests (relationship cascades, etc.) that a mocked session can't exercise realistically
+fakeredis>=2.26.0  # in-memory Redis for the rate limiter tests (tests/test_rate_limit.py)
 filetype>=1.2.0  # magic-byte content sniffing for document uploads — never trust the client-supplied Content-Type header
