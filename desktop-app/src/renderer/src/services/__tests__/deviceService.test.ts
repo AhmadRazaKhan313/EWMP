@@ -31,6 +31,30 @@ describe("deviceService.sendHeartbeat", () => {
     );
   });
 
+  it("stores the replacement agent token the server rotates in (H-12)", async () => {
+    vi.spyOn(window.ewmp.secureStore, "get").mockImplementation(async (key: string) =>
+      key === "agentToken" ? "old-token" : key === "serverUrl" ? "http://localhost:8000" : null,
+    );
+    vi.spyOn(axios, "post").mockResolvedValue({ data: { actions: [], agent_token: "new-token" } });
+    const setSpy = vi.spyOn(window.ewmp.secureStore, "set").mockResolvedValue(undefined as never);
+
+    await deviceService.sendHeartbeat();
+
+    expect(setSpy).toHaveBeenCalledWith("agentToken", "new-token");
+  });
+
+  it("leaves the stored token alone when the server does not rotate it", async () => {
+    vi.spyOn(window.ewmp.secureStore, "get").mockImplementation(async (key: string) =>
+      key === "agentToken" ? "old-token" : key === "serverUrl" ? "http://localhost:8000" : null,
+    );
+    vi.spyOn(axios, "post").mockResolvedValue({ data: { actions: [] } });
+    const setSpy = vi.spyOn(window.ewmp.secureStore, "set").mockResolvedValue(undefined as never);
+
+    await deviceService.sendHeartbeat();
+
+    expect(setSpy).not.toHaveBeenCalled();
+  });
+
   it("propagates a failed heartbeat rather than swallowing it silently", async () => {
     vi.spyOn(window.ewmp.secureStore, "get").mockImplementation(async (key: string) =>
       key === "agentToken" ? "agent-token-abc" : null,

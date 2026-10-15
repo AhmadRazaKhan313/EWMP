@@ -1,5 +1,11 @@
-import apiClient, { setTokens, clearTokens, getAccessToken } from "@shared/api-client";
-import type { AuthResponse, MeResponse, UserInToken } from "../types/auth";
+import apiClient, {
+  setTokens,
+  clearTokens,
+  getAccessToken,
+  getRefreshToken,
+  getServerBaseUrl,
+} from "@shared/api-client";
+import type { AuthResponse, MeResponse, ProfileUpdatePayload, UserInToken } from "../types/auth";
 
 export interface LoginResult {
   user: UserInToken;
@@ -25,8 +31,69 @@ export async function getMe(): Promise<MeResponse> {
   return data;
 }
 
+/** PATCH /auth/me — partial update; only the fields present in `payload`
+ * are changed. Returns the full updated profile so the caller doesn't
+ * need a separate re-fetch. */
+export async function updateProfile(payload: ProfileUpdatePayload): Promise<MeResponse> {
+  const { data } = await apiClient.patch<MeResponse>("/auth/me", payload);
+  return data;
+}
+
+/** POST /auth/me/avatar (multipart) — backend caps this at 5MB and only
+ * accepts PNG/JPEG/WebP; those same limits are enforced client-side first
+ * in ProfileScreen so a bad file never makes a doomed round trip. */
+export async function uploadAvatar(file: File): Promise<{ avatar_url: string }> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.post<{ avatar_url: string }>("/auth/me/avatar", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+/** avatar_url from the backend is a path (`/api/v1/auth/avatar/{id}`),
+ * already including /api/v1 — so it's joined onto the raw server base,
+ * NOT the /api/v1-suffixed API url (that would double it up). Serves
+ * unauthenticated, so this works directly as an <img src>. */
+export async function resolveAvatarUrl(avatarUrl: string | null): Promise<string | null> {
+  if (!avatarUrl) return null;
+  const base = await getServerBaseUrl();
+  return `${base}${avatarUrl}`;
+}
+
+/** Ends the session on the server (so the refresh token can never be used
+ * again — audit H-6), then clears local tokens. The server call is best-effort:
+ * offline or already-expired must still sign the user out locally. */
 export async function logout(): Promise<void> {
-  await clearTokens();
+  try {
+    const refreshToken = await getRefreshToken();
+    if (refreshToken) {
+      await apiClient.post("/auth/logout", { refresh_token: refreshToken });
+    }
+  } catch {
+    // fall through to the local sign-out
+  } finally {
+    await clearTokens();
+  }
+}
+
+/** POST /auth/change-password — used by ChangePasswordScreen, both for
+ * the forced first-login flow (must_change_password) and any later
+ * voluntary password change. */
+export async function changePassword(payload: {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+}): Promise<void> {
+  const { data } = await apiClient.post<{
+    tokens?: { access_token: string; refresh_token: string };
+  }>("/auth/change-password", payload);
+  // Changing the password invalidates the tokens this device was using and
+  // the server returns a fresh pair for it — store them or the next request
+  // would bounce to the login screen.
+  if (data?.tokens) {
+    await setTokens(data.tokens.access_token, data.tokens.refresh_token);
+  }
 }
 
 export async function hasStoredSession(): Promise<boolean> {
