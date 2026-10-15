@@ -12,7 +12,8 @@ import {
 
 // ── Landing page token system ─────────────────────────────────────────────────
 // Scoped to this page only (dashboard keeps its own neutral theme in
-// styles/globals.css). Brand: indigo, matching the approved reference design.
+// styles/globals.css). Colours point at the shared design tokens (brand scale
+// in styles/globals.css), so the landing page follows any rebrand too.
 //   --brand        : primary indigo — CTAs, links, active states
 //   --brand-dark    : hover / pressed indigo
 //   --brand-soft    : pale indigo tint — icon chips, highlighted card border
@@ -20,13 +21,13 @@ import {
 //   --muted         : slate gray for secondary text
 //   --surface       : off-white section background (alternates with white)
 const brand = {
-  "--brand": "#4F46E5",
-  "--brand-dark": "#4338CA",
-  "--brand-soft": "#EEF2FF",
-  "--brand-ring": "#C7D2FE",
-  "--ink": "#0F172A",
-  "--muted": "#64748B",
-  "--surface": "#F8FAFC",
+  "--brand": "hsl(var(--brand-600))",
+  "--brand-dark": "hsl(var(--brand-700))",
+  "--brand-soft": "hsl(var(--brand-50))",
+  "--brand-ring": "hsl(var(--brand-200))",
+  "--ink": "hsl(var(--gray-900))",
+  "--muted": "hsl(var(--gray-600))",
+  "--surface": "hsl(var(--gray-50))",
 } as React.CSSProperties;
 
 const features = [

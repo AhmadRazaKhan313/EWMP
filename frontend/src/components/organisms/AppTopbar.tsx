@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Bell, Search, ChevronDown, User, Settings, LogOut, ShieldAlert } from "lucide-react";
+import { Bell, Search, ChevronsUpDown, ChevronRight, User, Settings, LogOut, ShieldAlert } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth.store";
 import { useRecentDeviceAlerts } from "@/services/devices.service";
@@ -26,6 +26,11 @@ const PAGE_TITLES: Record<string, string> = {
   "/marketplace": "Marketplace",
   "/billing": "Billing",
   "/settings": "Settings",
+  "/shifts": "Shifts",
+  "/leave-types": "Leave Types",
+  "/designations": "Designations",
+  "/profile": "Profile",
+  "/admin-setup": "Admin Setup",
 };
 
 function getPageTitle(pathname: string): string {
@@ -44,19 +49,28 @@ export function AppTopbar() {
   const pageTitle = getPageTitle(pathname);
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--background))] px-6">
-      {/* Left: Page title */}
-      <h1 className="font-heading text-[15px] font-semibold text-[hsl(var(--foreground))]">
-        {pageTitle}
-      </h1>
+    <header className="flex h-16 shrink-0 items-center justify-between gap-4 bg-[hsl(var(--background))] px-8">
+      {/* Left: breadcrumb — avatar and name, then the current page (Figma: page header) */}
+      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-2">
+        <span className="flex items-center gap-2 rounded-md px-2 py-1 text-sm font-semibold text-[hsl(var(--foreground-muted))]">
+          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[hsl(var(--accent))] text-[10px] font-semibold text-[hsl(var(--accent-foreground))]">
+            {user?.first_name?.[0]}{user?.last_name?.[0]}
+          </span>
+          <span className="hidden sm:inline">{user?.first_name} {user?.last_name}</span>
+        </span>
+        <ChevronRight size={16} className="shrink-0 text-[hsl(var(--gray-300))]" />
+        <h1 className="truncate rounded-md bg-[hsl(var(--background-subtle))] px-2 py-1 font-heading text-sm font-semibold text-[hsl(var(--foreground-subtle))]">
+          {pageTitle}
+        </h1>
+      </nav>
 
       {/* Right: Actions */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         {/* Global search trigger */}
-        <button className="flex h-8 items-center gap-2 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background-subtle))] px-3 text-[13px] text-[hsl(var(--foreground-muted))] transition-colors hover:border-[hsl(var(--border-strong))] hover:text-[hsl(var(--foreground))]">
-          <Search size={13} />
-          <span>Search...</span>
-          <span className="ml-1 rounded border border-[hsl(var(--border))] px-1 py-0.5 text-[10px] font-mono">
+        <button className="flex h-10 w-64 items-center gap-2 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3.5 text-sm text-[hsl(var(--foreground-muted))] shadow-[var(--shadow-xs)] transition-colors hover:border-[hsl(var(--brand-300))]">
+          <Search size={18} />
+          <span>Search</span>
+          <span className="ml-auto rounded border border-[hsl(var(--border))] px-1.5 py-0.5 text-xs font-medium">
             ⌘K
           </span>
         </button>
@@ -66,16 +80,19 @@ export function AppTopbar() {
 
         {/* User menu */}
         <div className="group relative">
-          <button className="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] font-medium text-[hsl(var(--foreground))] transition-colors hover:bg-[hsl(var(--accent))]">
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[hsl(var(--primary))] text-[10px] font-bold text-[hsl(var(--primary-foreground))]">
+          <button className="flex items-center gap-3 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] py-1.5 pl-2 pr-3 text-left shadow-[var(--shadow-xs)] transition-colors hover:bg-[hsl(var(--background-subtle))]">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[hsl(var(--accent))] text-xs font-semibold text-[hsl(var(--accent-foreground))]">
               {user?.first_name?.[0]}{user?.last_name?.[0]}
-            </div>
-            <span className="hidden sm:inline">{user?.first_name}</span>
-            <ChevronDown size={12} className="text-[hsl(var(--foreground-muted))]" />
+            </span>
+            <span className="hidden min-w-0 sm:block">
+              <span className="block truncate text-sm font-semibold leading-5 text-[hsl(var(--foreground-subtle))]">{user?.full_name || user?.first_name}</span>
+              <span className="block max-w-[160px] truncate text-xs leading-[18px] text-[hsl(var(--foreground-muted))]">{user?.email}</span>
+            </span>
+            <ChevronsUpDown size={16} className="text-[hsl(var(--gray-400))]" />
           </button>
 
           {/* Dropdown */}
-          <div className="absolute right-0 top-full z-50 mt-1 hidden w-48 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] py-1 shadow-lg group-hover:block">
+          <div className="absolute right-0 top-full z-50 mt-1 hidden w-56 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] py-1 shadow-lg group-hover:block">
             <div className="border-b border-[hsl(var(--border))] px-3 py-2">
               <p className="text-[13px] font-medium">{user?.full_name}</p>
               <p className="text-[11px] text-[hsl(var(--foreground-muted))]">{user?.email}</p>
@@ -117,9 +134,9 @@ function NotificationBell() {
     <div className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="relative flex h-8 w-8 items-center justify-center rounded-md text-[hsl(var(--foreground-muted))] transition-colors hover:bg-[hsl(var(--accent))] hover:text-[hsl(var(--foreground))]"
+        className="relative flex h-10 w-10 items-center justify-center rounded-md text-[hsl(var(--foreground-muted))] transition-colors hover:bg-[hsl(var(--background-subtle))] hover:text-[hsl(var(--foreground))]"
       >
-        <Bell size={15} />
+        <Bell size={20} />
         {unacknowledgedCount > 0 && (
           <span className="absolute right-1 top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-[hsl(var(--destructive))] px-0.5 text-[9px] font-bold text-white">
             {unacknowledgedCount > 9 ? "9+" : unacknowledgedCount}

@@ -4,6 +4,9 @@ import { useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth.store";
 import { AppSidebar } from "@/components/organisms/AppSidebar";
 import { AppTopbar } from "@/components/organisms/AppTopbar";
+import { FloatingTimerWidget } from "@/components/organisms/FloatingTimerWidget";
+import { ForcePasswordChangeModal } from "@/components/organisms/ForcePasswordChangeModal";
+import { EmailVerificationBanner } from "@/components/organisms/EmailVerificationBanner";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isInitialized, isLoading, user } = useAuthStore();
@@ -31,21 +34,27 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (!isAuthenticated) return null;
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[hsl(var(--background-subtle))]">
+    <div className="relative flex h-dvh overflow-hidden bg-[hsl(var(--background))]">
       <AppSidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <AppTopbar />
-        <main className="flex-1 overflow-y-auto px-6 py-6">
+        <EmailVerificationBanner />
+        <main className="flex-1 overflow-y-auto px-8 pb-8 pt-2">
           {children}
         </main>
       </div>
+      {/* Always-on-screen check-in / break timer (bottom-right, minimisable). */}
+      <FloatingTimerWidget />
+      {/* Was imported but never rendered, so a temporary password was never
+          force-changed. Blocks the app until the user sets their own. */}
+      {user?.must_change_password && <ForcePasswordChangeModal />}
     </div>
   );
 }
 
 function DashboardSkeleton() {
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-dvh overflow-hidden">
       <div className="w-60 bg-[hsl(var(--sidebar-background))] flex flex-col gap-2 p-4">
         <div className="skeleton h-8 w-32 rounded-md mb-6" />
         {Array.from({ length: 10 }).map((_, i) => (

@@ -1,16 +1,16 @@
 import type { Metadata, Viewport } from "next";
-import { DM_Sans, Space_Grotesk, IBM_Plex_Mono } from "next/font/google";
+import { Inter, IBM_Plex_Mono } from "next/font/google";
 import { Providers } from "@/providers";
 import "@/styles/globals.css";
 
-// ── Typography — same as the design system ────────────────────────────────────
-const dmSans = DM_Sans({
+// ── Typography — Inter for body and headings, as in the design ───────────────
+const inter = Inter({
   subsets: ["latin"],
   variable: "--font-sans",
   display: "swap",
 });
 
-const spaceGrotesk = Space_Grotesk({
+const interHeading = Inter({
   subsets: ["latin"],
   variable: "--font-heading",
   display: "swap",
@@ -40,7 +40,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#09090b" },
+    { media: "(prefers-color-scheme: dark)", color: "#0c0e12" },
   ],
   width: "device-width",
   initialScale: 1,
@@ -55,7 +55,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${dmSans.variable} ${spaceGrotesk.variable} ${ibmPlexMono.variable}`}
+      className={`${inter.variable} ${interHeading.variable} ${ibmPlexMono.variable}`}
     >
       <body className="min-h-screen bg-background font-sans antialiased" suppressHydrationWarning>
         <Providers>{children}</Providers>

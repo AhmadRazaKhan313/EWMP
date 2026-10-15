@@ -114,22 +114,21 @@ export function DataTable<TData>({
   return (
     <div className="flex flex-col gap-3">
       {/* Toolbar */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         {/* Search */}
         <div className="relative flex-1">
           <Search
-            size={14}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[hsl(var(--foreground-muted))]"
+            size={20}
+            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[hsl(var(--foreground-muted))]"
           />
           <input
             value={globalFilter}
             onChange={(e) => setGlobalFilter(e.target.value)}
             placeholder={searchPlaceholder}
             className={cn(
-              "h-9 w-full max-w-xs rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))]",
-              "pl-8 pr-3 text-sm outline-none placeholder:text-[hsl(var(--foreground-muted))]",
-              "focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1",
-              "hover:border-[hsl(var(--border-strong))]",
+              "h-10 w-full max-w-xs rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))]",
+              "pl-11 pr-3.5 text-sm shadow-[var(--shadow-xs)] outline-none placeholder:text-[hsl(var(--foreground-muted))]",
+              "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
             )}
           />
         </div>
@@ -149,11 +148,11 @@ export function DataTable<TData>({
           <button
             onClick={() => setShowColMenu((v) => !v)}
             className={cn(
-              "flex h-9 items-center gap-1.5 rounded-md border border-[hsl(var(--border))] px-3 text-sm",
-              "hover:bg-[hsl(var(--accent))] transition-colors",
+              "flex h-10 items-center gap-1.5 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3.5 text-sm font-semibold",
+              "text-[hsl(var(--foreground-subtle))] shadow-[var(--shadow-xs)] hover:bg-[hsl(var(--background-subtle))] transition-colors",
             )}
           >
-            <Settings2 size={14} />
+            <Settings2 size={18} />
             <span className="hidden sm:inline">View</span>
           </button>
 
@@ -186,11 +185,11 @@ export function DataTable<TData>({
           <table className="w-full text-sm">
             <thead>
               {table.getHeaderGroups().map((hg) => (
-                <tr key={hg.id} className="border-b border-[hsl(var(--border))] bg-[hsl(var(--background-subtle))]">
+                <tr key={hg.id} className="h-11 border-b border-[hsl(var(--border))] bg-[hsl(var(--background-subtle))]">
                   {hg.headers.map((header) => (
                     <th
                       key={header.id}
-                      className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-[hsl(var(--foreground-muted))]"
+                      className="px-6 py-3 text-left text-xs font-semibold text-[hsl(var(--muted-foreground))]"
                       style={{ width: header.getSize() !== 150 ? header.getSize() : undefined }}
                     >
                       {header.isPlaceholder ? null : (
@@ -221,12 +220,12 @@ export function DataTable<TData>({
               ))}
             </thead>
 
-            <tbody className="divide-y divide-[hsl(var(--border))]">
+            <tbody className="divide-y divide-[hsl(var(--border))] text-[hsl(var(--foreground-muted))]">
               {isLoading ? (
                 Array.from({ length: 8 }).map((_, i) => (
                   <tr key={i}>
                     {columns.map((_, j) => (
-                      <td key={j} className="px-4 py-3">
+                      <td key={j} className="px-6 py-4">
                         <Skeleton className="h-5 w-full" />
                       </td>
                     ))}
@@ -254,7 +253,7 @@ export function DataTable<TData>({
                     )}
                   >
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="px-4 py-3">
+                      <td key={cell.id} className="px-6 py-4">
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                       </td>
                     ))}
@@ -265,9 +264,9 @@ export function DataTable<TData>({
           </table>
         </div>
 
-        {/* Pagination */}
-        <div className="flex items-center justify-between border-t border-[hsl(var(--border))] px-4 py-3">
-          <div className="text-xs text-[hsl(var(--foreground-muted))]">
+        {/* Pagination — Untitled UI "card minimal, center aligned": Previous | Page X of Y | Next */}
+        <div className="flex items-center gap-3 border-t border-[hsl(var(--border))] px-6 pb-4 pt-3">
+          <div className="flex-1 text-xs text-[hsl(var(--foreground-muted))]">
             {isLoading ? (
               <Skeleton className="h-4 w-32" />
             ) : (
@@ -285,23 +284,28 @@ export function DataTable<TData>({
             )}
           </div>
 
-          <div className="flex items-center gap-1">
+          <span className="text-sm font-medium text-[hsl(var(--foreground-subtle))]">
+            Page {currentPageLabel} of {pageCountLabel}
+          </span>
+
+          <div className="flex flex-1 items-center justify-end gap-3">
             <button
               onClick={goPrev}
               disabled={!canPrev}
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-[hsl(var(--border))] hover:bg-[hsl(var(--accent))] disabled:opacity-40"
+              aria-label="Previous page"
+              className="flex h-9 items-center gap-1 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3 text-sm font-semibold text-[hsl(var(--foreground-subtle))] shadow-[var(--shadow-xs)] hover:bg-[hsl(var(--background-subtle))] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <ChevronLeft size={13} />
+              <ChevronLeft size={16} />
+              <span className="hidden sm:inline">Previous</span>
             </button>
-            <span className="px-2 text-xs font-medium">
-              Page {currentPageLabel} of {pageCountLabel}
-            </span>
             <button
               onClick={goNext}
               disabled={!canNext}
-              className="flex h-7 w-7 items-center justify-center rounded-md border border-[hsl(var(--border))] hover:bg-[hsl(var(--accent))] disabled:opacity-40"
+              aria-label="Next page"
+              className="flex h-9 items-center gap-1 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3 text-sm font-semibold text-[hsl(var(--foreground-subtle))] shadow-[var(--shadow-xs)] hover:bg-[hsl(var(--background-subtle))] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <ChevronRight size={13} />
+              <span className="hidden sm:inline">Next</span>
+              <ChevronRight size={16} />
             </button>
           </div>
         </div>
