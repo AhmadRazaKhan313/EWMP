@@ -3,9 +3,10 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.models.devices import Asset, AssetAssignment, AssetStatus
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
@@ -90,17 +91,37 @@ async def create_asset(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     from datetime import date as ddate
+    asset_tag = body.asset_tag.strip().upper()
+    serial_number = body.serial_number.strip() or None
+    if not asset_tag:
+        raise ValidationError("asset_tag is required")
+
+    # Tags and serials are unique per organisation among live assets (audit
+    # H-3; migration c4e95883fb29). Check first for a clear message; the
+    # partial unique indexes still catch a concurrent duplicate below.
+    live = [Asset.tenant_id == tenant_id, Asset.is_deleted == False]  # noqa: E712
+    if (await db.execute(select(Asset.id).where(*live, Asset.asset_tag == asset_tag))).first():
+        raise ConflictError(f"An asset with tag {asset_tag} already exists")
+    if serial_number and (
+        await db.execute(select(Asset.id).where(*live, Asset.serial_number == serial_number))
+    ).first():
+        raise ConflictError(f"An asset with serial number {serial_number} already exists")
+
     asset = Asset(
-        tenant_id=tenant_id, name=body.name, asset_tag=body.asset_tag.upper(),
+        tenant_id=tenant_id, name=body.name, asset_tag=asset_tag,
         category=body.category, brand=body.brand or None, model=body.model or None,
-        serial_number=body.serial_number or None,
+        serial_number=serial_number,
         purchase_cost=body.purchase_cost, vendor=body.vendor or None,
         purchase_date=ddate.fromisoformat(body.purchase_date) if body.purchase_date else None,
         warranty_expiry=ddate.fromisoformat(body.warranty_expiry) if body.warranty_expiry else None,
         location=body.location or None, status=AssetStatus.AVAILABLE,
     )
-    db.add(asset)
-    await db.flush()
+    try:
+        async with db.begin_nested():
+            db.add(asset)
+            await db.flush()
+    except IntegrityError:
+        raise ConflictError("An asset with this tag or serial number already exists")
     return {"id": str(asset.id), "asset_tag": asset.asset_tag, "created": True}
 
 @router.patch("/{asset_id}")

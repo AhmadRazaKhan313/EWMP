@@ -29,7 +29,7 @@ from app.models.organization import Organization
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
 from app.services.ai_config import resolve_ai_config
-from app.services.ai_tools import TOOL_REGISTRY, execute_tool
+from app.services.ai_tools import TOOL_REGISTRY, execute_tool, tools_for_user
 
 router = APIRouter(prefix="/ai", tags=["AI Assistant"])
 
@@ -63,10 +63,15 @@ You have tools available to pull real, live numbers from this organization's
 data — always call the relevant tool before answering a question about
 counts, rates, or totals rather than guessing or speaking in generalities.
 Cite the actual numbers the tools return. Be concise, professional, and
-data-focused. Keep responses under 300 words."""
+data-focused. Keep responses under 300 words.
+
+You only have the tools you were given. If a question needs organization data
+that none of your tools can provide (or a tool reports the user lacks
+permission), say that their role does not allow access to that information —
+never guess or invent numbers."""
 
 
-def _anthropic_tools() -> list[dict]:
+def _anthropic_tools(allowed_tools: frozenset[str]) -> list[dict]:
     return [
         {
             "name": name,
@@ -74,10 +79,11 @@ def _anthropic_tools() -> list[dict]:
             "input_schema": spec["parameters"],
         }
         for name, spec in TOOL_REGISTRY.items()
+        if name in allowed_tools
     ]
 
 
-def _openai_tools() -> list[dict]:
+def _openai_tools(allowed_tools: frozenset[str]) -> list[dict]:
     return [
         {
             "type": "function",
@@ -88,26 +94,29 @@ def _openai_tools() -> list[dict]:
             },
         }
         for name, spec in TOOL_REGISTRY.items()
+        if name in allowed_tools
     ]
 
 
 async def _chat_anthropic(
-    api_key: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID
+    api_key: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID,
+    allowed_tools: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str]]:
     import anthropic
 
     client = anthropic.Anthropic(api_key=api_key)
-    tools = _anthropic_tools()
+    tools = _anthropic_tools(allowed_tools)
     tools_used: list[str] = []
     conversation = list(messages)
 
     for _ in range(MAX_TOOL_ROUNDTRIPS):
+        extra = {"tools": tools} if tools else {}  # the API rejects an empty tools list
         response = client.messages.create(
             model=model,
             max_tokens=1024,
             system=SYSTEM_PROMPT,
             messages=conversation,
-            tools=tools,
+            **extra,
         )
 
         tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
@@ -119,7 +128,9 @@ async def _chat_anthropic(
         tool_results = []
         for block in tool_use_blocks:
             tools_used.append(block.name)
-            result = await execute_tool(block.name, block.input or {}, db, tenant_id)
+            result = await execute_tool(
+                block.name, block.input or {}, db, tenant_id, allowed_tools=allowed_tools
+            )
             tool_results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
@@ -131,23 +142,25 @@ async def _chat_anthropic(
 
 
 async def _run_openai_compatible(
-    client, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID
+    client, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID,
+    allowed_tools: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str]]:
     """Shared tool-calling loop for any client speaking the OpenAI chat-completions
     wire format — used for both real OpenAI and (via a different base_url/api_key)
     local Ollama, whose /v1 endpoint is OpenAI-compatible."""
     import json as _json
 
-    tools = _openai_tools()
+    tools = _openai_tools(allowed_tools)
     tools_used: list[str] = []
     conversation = [{"role": "system", "content": SYSTEM_PROMPT}] + list(messages)
 
     for _ in range(MAX_TOOL_ROUNDTRIPS):
+        extra = {"tools": tools} if tools else {}  # the API rejects an empty tools list
         response = client.chat.completions.create(
             model=model,
             messages=conversation,
-            tools=tools,
             max_tokens=1024,
+            **extra,
         )
         choice = response.choices[0].message
 
@@ -162,7 +175,9 @@ async def _run_openai_compatible(
         for tc in choice.tool_calls:
             tools_used.append(tc.function.name)
             args = _json.loads(tc.function.arguments or "{}")
-            result = await execute_tool(tc.function.name, args, db, tenant_id)
+            result = await execute_tool(
+                tc.function.name, args, db, tenant_id, allowed_tools=allowed_tools
+            )
             conversation.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
@@ -173,16 +188,18 @@ async def _run_openai_compatible(
 
 
 async def _chat_openai(
-    api_key: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID
+    api_key: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID,
+    allowed_tools: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str]]:
     import openai
 
     client = openai.OpenAI(api_key=api_key)
-    return await _run_openai_compatible(client, model, messages, db, tenant_id)
+    return await _run_openai_compatible(client, model, messages, db, tenant_id, allowed_tools)
 
 
 async def _chat_ollama(
-    base_url: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID
+    base_url: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID,
+    allowed_tools: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str]]:
     """Ollama serves an OpenAI-compatible /v1 endpoint, so the OpenAI SDK works
     against it unmodified — only base_url changes, and the API key is a
@@ -195,11 +212,14 @@ async def _chat_ollama(
     if not normalized.endswith("/v1"):
         normalized = f"{normalized}/v1"
     client = openai.OpenAI(api_key="ollama", base_url=normalized)
-    return await _run_openai_compatible(client, model or "llama3.1", messages, db, tenant_id)
+    return await _run_openai_compatible(
+        client, model or "llama3.1", messages, db, tenant_id, allowed_tools
+    )
 
 
 async def _chat_google(
-    api_key: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID
+    api_key: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID,
+    allowed_tools: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str]]:
     """Uses google-genai, the current unified SDK — google-generativeai (the
     older `import google.generativeai as genai` package) reached end of life
@@ -216,10 +236,11 @@ async def _chat_google(
             name=name, description=spec["description"], parameters=spec["parameters"]
         )
         for name, spec in TOOL_REGISTRY.items()
+        if name in allowed_tools
     ]
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT,
-        tools=[types.Tool(function_declarations=function_declarations)],
+        tools=[types.Tool(function_declarations=function_declarations)] if function_declarations else None,
         # We drive the tool loop ourselves (execute_tool is async and
         # tenant-scoped) rather than letting the SDK call plain Python
         # functions automatically.
@@ -247,7 +268,9 @@ async def _chat_google(
         for call in calls:
             tools_used.append(call.name)
             args = dict(call.args) if call.args else {}
-            result = await execute_tool(call.name, args, db, tenant_id)
+            result = await execute_tool(
+                call.name, args, db, tenant_id, allowed_tools=allowed_tools
+            )
             response_parts.append(
                 types.Part.from_function_response(name=call.name, response={"result": result})
             )
@@ -264,24 +287,31 @@ async def _dispatch_chat(
     messages: list[dict],
     db: AsyncSession,
     tenant_id: UUID,
+    allowed_tools: frozenset[str] = frozenset(),
 ) -> tuple[str, list[str]]:
     """Single entry point both /ai/chat and /ai/config/test call — keeps the
-    provider-specific wiring in exactly one place."""
+    provider-specific wiring in exactly one place.
+
+    `allowed_tools` defaults to EMPTY (fail-closed): a caller must explicitly
+    pass the tools the current user is permitted to use. /ai/config/test
+    deliberately passes none — a connectivity check needs no org data."""
     if provider == "anthropic":
         if not api_key:
             raise AIProviderError("Anthropic API key not configured")
         m = model if model and model.startswith("claude") else "claude-sonnet-5"
-        return await _chat_anthropic(api_key, m, messages, db, tenant_id)
+        return await _chat_anthropic(api_key, m, messages, db, tenant_id, allowed_tools)
     if provider == "openai":
         if not api_key:
             raise AIProviderError("OpenAI API key not configured")
-        return await _chat_openai(api_key, model or "gpt-4o-mini", messages, db, tenant_id)
+        return await _chat_openai(api_key, model or "gpt-4o-mini", messages, db, tenant_id, allowed_tools)
     if provider == "google":
         if not api_key:
             raise AIProviderError("Google AI API key not configured")
-        return await _chat_google(api_key, model or "gemini-1.5-flash", messages, db, tenant_id)
+        return await _chat_google(api_key, model or "gemini-1.5-flash", messages, db, tenant_id, allowed_tools)
     if provider == "ollama":
-        return await _chat_ollama(base_url or settings.OLLAMA_BASE_URL, model, messages, db, tenant_id)
+        return await _chat_ollama(
+            base_url or settings.OLLAMA_BASE_URL, model, messages, db, tenant_id, allowed_tools
+        )
     raise AIProviderError(f"Unsupported AI provider: {provider!r}")
 
 
@@ -310,7 +340,8 @@ async def chat(
 
     try:
         content, tools_used = await _dispatch_chat(
-            cfg.provider, cfg.model, cfg.api_key, cfg.base_url, messages, db, tenant_id
+            cfg.provider, cfg.model, cfg.api_key, cfg.base_url, messages, db, tenant_id,
+            allowed_tools=tools_for_user(current_user),
         )
         return ChatResponse(response=content, tools_used=tools_used)
 

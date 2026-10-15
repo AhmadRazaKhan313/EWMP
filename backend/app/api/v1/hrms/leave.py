@@ -7,9 +7,11 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, model_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
+from app.core.timezones import local_today, org_zone
+from app.core.exceptions import ConflictError, EmployeeProfileNotLinkedError, NotFoundError, PermissionDeniedError, ValidationError
 from app.models.attendance import LeaveType, LeaveBalance, LeaveRequest, LeaveRequestStatus
 from app.models.employee import Employee
 from app.models.organization import Organization
@@ -132,15 +134,19 @@ async def _get_or_create_balance(
     the first time they touch this leave type in this year. This is the
     piece that was entirely missing before (bug C2): `LeaveBalance` was
     imported but never read from or written to anywhere."""
-    result = await db.execute(
-        select(LeaveBalance).where(
-            LeaveBalance.tenant_id == tenant_id,
-            LeaveBalance.employee_id == employee_id,
-            LeaveBalance.leave_type_id == leave_type.id,
-            LeaveBalance.year == year,
-        )
-    )
-    balance = result.scalar_one_or_none()
+    lookup = select(LeaveBalance).where(
+        LeaveBalance.tenant_id == tenant_id,
+        LeaveBalance.employee_id == employee_id,
+        LeaveBalance.leave_type_id == leave_type.id,
+        LeaveBalance.year == year,
+        LeaveBalance.is_deleted == False,  # noqa: E712
+    ).with_for_update()
+    # FOR UPDATE: every caller reads pending/used days, changes them and
+    # writes them back. Without a row lock, requests submitted together
+    # overwrote each other — 4 simultaneous 1-day requests left 2 days
+    # pending (lost updates), which also let employees overdraw. Requests on
+    # the SAME balance now take turns; everything else stays parallel.
+    balance = (await db.execute(lookup)).scalar_one_or_none()
     if balance is None:
         balance = LeaveBalance(
             tenant_id=tenant_id,
@@ -152,8 +158,15 @@ async def _get_or_create_balance(
             used_days=Decimal("0"),
             pending_days=Decimal("0"),
         )
-        db.add(balance)
-        await db.flush()
+        try:
+            # uq_leave_balances_one_per_type_year (audit H-2): two leave
+            # requests submitted together must share ONE balance row — two
+            # rows split the usage and made every later read a 500.
+            async with db.begin_nested():
+                db.add(balance)
+                await db.flush()
+        except IntegrityError:
+            balance = (await db.execute(lookup)).scalar_one()
     return balance
 
 
@@ -228,7 +241,7 @@ async def list_leave_requests(
         repo = EmployeeRepository(db, tenant_id)
         own = await repo.get_by_user_id(current_user.id)
         if own is None:
-            raise NotFoundError("Employee profile not found for this user")
+            raise EmployeeProfileNotLinkedError()
         employee_id = own.id
 
     filters = [LeaveRequest.tenant_id == tenant_id, LeaveRequest.is_deleted == False]
@@ -337,7 +350,8 @@ async def reject_leave(
                 LeaveBalance.employee_id == req.employee_id,
                 LeaveBalance.leave_type_id == req.leave_type_id,
                 LeaveBalance.year == req.start_date.year,
-            )
+                LeaveBalance.is_deleted == False,  # noqa: E712
+            ).with_for_update()  # same read-modify-write as above
         )
     ).scalar_one_or_none()
     if balance is not None:
@@ -368,7 +382,7 @@ async def _resolve_leave_employee(
     # No target, or explicitly targeting self → the caller's own record.
     if employee_id is None or (own is not None and employee_id == own.id):
         if own is None:
-            raise NotFoundError("Employee profile not found for this user")
+            raise EmployeeProfileNotLinkedError()
         return own.id
 
     # Applying on behalf of someone else → manager/HR only.
@@ -474,7 +488,7 @@ async def get_leave_balances(
     reusing the same gate as filing leave on someone else's behalf.
     """
     target_employee_id = await _resolve_leave_employee(db, tenant_id, current_user, employee_id)
-    target_year = year or ddate.today().year
+    target_year = year or local_today(await org_zone(db, tenant_id)).year
 
     leave_types = (
         await db.execute(
@@ -490,6 +504,7 @@ async def get_leave_balances(
                     LeaveBalance.tenant_id == tenant_id,
                     LeaveBalance.employee_id == target_employee_id,
                     LeaveBalance.year == target_year,
+                    LeaveBalance.is_deleted == False,  # noqa: E712
                 )
             )
         ).scalars().all()

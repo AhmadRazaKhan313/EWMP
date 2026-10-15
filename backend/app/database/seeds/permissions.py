@@ -43,9 +43,14 @@ PERMISSION_REGISTRY: list[dict] = [
     {"resource": "payroll", "action": "view",           "label": "View Payroll",              "category": "Payroll",            "is_sensitive": True},
     {"resource": "payroll", "action": "process",        "label": "Process Payroll",           "category": "Payroll",            "is_sensitive": True},
     {"resource": "payroll", "action": "approve",        "label": "Approve Payroll Runs",      "category": "Payroll",            "is_sensitive": True},
+    {"resource": "payroll", "action": "finalize",       "label": "Finalize Payroll Runs",     "category": "Payroll",            "is_sensitive": True},
+    {"resource": "payroll", "action": "lock",           "label": "Lock Payroll Runs",         "category": "Payroll",            "is_sensitive": True},
+    {"resource": "payroll", "action": "reopen",         "label": "Reopen Locked Payroll",     "category": "Payroll",            "is_sensitive": True},
+    {"resource": "payroll", "action": "reverse",        "label": "Reverse Payroll Runs",      "category": "Payroll",            "is_sensitive": True},
     {"resource": "payroll", "action": "view_own",       "label": "View Own Payslip",          "category": "Payroll",            "is_sensitive": False},
     {"resource": "payroll", "action": "export",         "label": "Export Payroll Data",       "category": "Payroll",            "is_sensitive": True},
     {"resource": "payroll", "action": "manage_structure","label": "Manage Salary Structures", "category": "Payroll",            "is_sensitive": True},
+    {"resource": "payroll", "action": "manage_settings", "label": "Manage Payroll Settings",  "category": "Payroll",            "is_sensitive": True},
 
     # ── Recruitment ───────────────────────────────────────────────
     {"resource": "recruitment", "action": "view",       "label": "View Recruitment",          "category": "Recruitment",        "is_sensitive": False},
