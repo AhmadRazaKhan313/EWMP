@@ -35,6 +35,7 @@ interface DeviceState {
   init: () => Promise<void>;
   acknowledgeAndEnroll: () => Promise<void>;
   retryEnrollment: () => Promise<void>;
+  handleDeviceInvalidated: () => Promise<void>;
 }
 
 export const useDeviceStore = create<DeviceState>((set) => ({
@@ -70,6 +71,34 @@ export const useDeviceStore = create<DeviceState>((set) => ({
 
   retryEnrollment: async (): Promise<void> => {
     await performEnrollment(set);
+  },
+
+  /**
+   * Self-heal for a stale local device: init() only checks whether a
+   * deviceId exists LOCALLY, never whether the backend still recognizes
+   * it — cheap and non-blocking, per this file's own design notes above.
+   * That's fine day-to-day, but breaks down the moment the backend's
+   * Device row is gone while the local cache still has an old
+   * deviceId/agentToken (e.g. a database reset/restore, or the device
+   * being decommissioned from the admin side) — the app would sit
+   * forever believing it's "enrolled" while every heartbeat silently
+   * 401s and the device never appears in the fleet table again.
+   *
+   * useDeviceHeartbeat.ts calls this specifically when a heartbeat comes
+   * back 401 ("Device not enrolled" — see backend's get_current_device,
+   * which returns exactly this for BOTH a truly-invalid token and a
+   * device row that no longer exists, so 401 is an unambiguous signal
+   * either way). Clearing the cached IDs flips status back to
+   * "needs_finish", which surfaces the existing "Finish device setup"
+   * retry affordance — the very next click re-runs self-enroll and the
+   * device reappears on the admin side with a fresh row.
+   */
+  handleDeviceInvalidated: async (): Promise<void> => {
+    await Promise.all([
+      window.ewmp.secureStore.delete("deviceId"),
+      window.ewmp.secureStore.delete("agentToken"),
+    ]);
+    set({ status: "needs_finish", error: "Device session expired — click to re-register this device." });
   },
 }));
 

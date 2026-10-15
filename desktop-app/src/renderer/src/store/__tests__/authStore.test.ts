@@ -20,7 +20,7 @@ describe("authStore.login", () => {
       user: {
         id: "u1", email: "a@b.com", first_name: "A", last_name: "B", full_name: "A B",
         avatar_url: null, is_platform_admin: false, organization_id: null,
-        organization_slug: null, roles: [], permissions: [],
+        organization_slug: null, roles: [], permissions: [], must_change_password: false,
       },
     });
 
@@ -50,7 +50,7 @@ describe("authStore.logout", () => {
   });
 
   it("clears user and sets status=unauthenticated", async () => {
-    useAuthStore.setState({ status: "authenticated", user: { id: "1", email: "a@b.com", full_name: "A", avatar_url: null } });
+    useAuthStore.setState({ status: "authenticated", user: { id: "1", email: "a@b.com", full_name: "A", avatar_url: null, must_change_password: false } });
     vi.mocked(authService.logout).mockResolvedValue(undefined);
 
     await useAuthStore.getState().logout();
@@ -79,7 +79,9 @@ describe("authStore.restoreSession", () => {
     vi.mocked(authService.hasStoredSession).mockResolvedValue(true);
     vi.mocked(authService.getMe).mockResolvedValue({
       id: "u1", email: "a@b.com", first_name: "A", last_name: "B", full_name: "A B",
-      avatar_url: null, is_platform_admin: false, is_2fa_enabled: false,
+      avatar_url: null, phone: null, bio: null, is_platform_admin: false, is_2fa_enabled: false,
+      organization_id: "org1", roles: [], permissions: [], has_full_access: false,
+      has_employee_profile: false, must_change_password: false, preferences: {},
     });
 
     await useAuthStore.getState().restoreSession();
@@ -105,7 +107,7 @@ describe("attachAuthFailureListener", () => {
   });
 
   it("logs the user out when the api-client dispatches an auth-failure event", () => {
-    useAuthStore.setState({ status: "authenticated", user: { id: "1", email: "a@b.com", full_name: "A", avatar_url: null } });
+    useAuthStore.setState({ status: "authenticated", user: { id: "1", email: "a@b.com", full_name: "A", avatar_url: null, must_change_password: false } });
     attachAuthFailureListener();
 
     window.dispatchEvent(new CustomEvent(AUTH_FAILURE_EVENT));

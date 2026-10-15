@@ -1,7 +1,7 @@
 import axios from "axios";
 import apiClient from "@shared/api-client";
 import { getServerUrl } from "@shared/api-client";
-import type { HardwareInfo } from "@shared/deviceTypes";
+import type { HardwareInfo, HeartbeatResponse, WatchlistAlert } from "@shared/deviceTypes";
 
 export interface SelfEnrollResult {
   device_id: string;
@@ -47,19 +47,79 @@ export const deviceService = {
    *
    * No body fields sent yet — every field on HeartbeatRequest is
    * optional; CPU/RAM/disk metrics are Track B step 3, not yet built.
-   * A no-op (never throws) if enrollment hasn't produced an agentToken
-   * yet, since useDeviceHeartbeat only calls this once deviceStatus is
-   * "enrolled" but a defensive check here costs nothing.
+   *
+   * Returns the response body (`actions`, `activity_watchlist`) rather
+   * than discarding it — see backend's heartbeat() docstring: "metrics
+   * in, pending actions out". Returns null (never throws) if enrollment
+   * hasn't produced an agentToken yet, since useDeviceHeartbeat only
+   * calls this once deviceStatus is "enrolled" but a defensive check
+   * here costs nothing.
    */
-  sendHeartbeat: async (): Promise<void> => {
+  sendHeartbeat: async (): Promise<HeartbeatResponse | null> => {
     const agentToken = await window.ewmp.secureStore.get("agentToken");
-    if (!agentToken) return;
+    if (!agentToken) return null;
 
     const serverUrl = await getServerUrl();
-    await axios.post(
+    const { data } = await axios.post<HeartbeatResponse>(
       `${serverUrl}/devices/heartbeat`,
       {},
       { headers: { Authorization: `Bearer ${agentToken}` }, timeout: 15_000 },
     );
+    // The server rotates agent tokens before they expire (audit H-12). Persist
+    // the replacement so the next request uses it; until it does, the old token
+    // keeps working, so a failure here never locks the device out.
+    if (data?.agent_token) {
+      await window.ewmp.secureStore.set("agentToken", data.agent_token);
+    }
+    return data;
+  },
+
+  /**
+   * POST /devices/screenshots/upload — fulfils a queued "screenshot"
+   * action from the heartbeat response. Same agent_token auth as
+   * sendHeartbeat (not the employee's session token) — this endpoint
+   * authenticates via get_current_device too.
+   */
+  uploadScreenshot: async (
+    base64Png: string,
+    meta: { width: number; height: number; requestedBy?: string },
+  ): Promise<void> => {
+    const agentToken = await window.ewmp.secureStore.get("agentToken");
+    if (!agentToken) return;
+
+    const bytes = Uint8Array.from(atob(base64Png), (c) => c.charCodeAt(0));
+    const form = new FormData();
+    form.append("file", new Blob([bytes], { type: "image/png" }), "screenshot.png");
+    form.append("mime_type", "image/png");
+    form.append("width", String(meta.width));
+    form.append("height", String(meta.height));
+    if (meta.requestedBy) form.append("requested_by", meta.requestedBy);
+
+    const serverUrl = await getServerUrl();
+    await axios.post(`${serverUrl}/devices/screenshots/upload`, form, {
+      headers: { Authorization: `Bearer ${agentToken}` },
+      timeout: 30_000,
+    });
+  },
+
+  /**
+   * POST /devices/alerts/upload — reports flagged app/window matches
+   * already filtered locally against the activity_watchlist (see
+   * DeviceAlert's backend docstring: this endpoint "does not accept...
+   * a full activity/browsing log entry", only pre-matched items).
+   */
+  uploadAlerts: async (
+    alerts: WatchlistAlert[],
+  ): Promise<{ created: number; suppressed_by_allowlist: number } | null> => {
+    const agentToken = await window.ewmp.secureStore.get("agentToken");
+    if (!agentToken || alerts.length === 0) return null;
+
+    const serverUrl = await getServerUrl();
+    const { data } = await axios.post(
+      `${serverUrl}/devices/alerts/upload`,
+      { alerts },
+      { headers: { Authorization: `Bearer ${agentToken}` }, timeout: 15_000 },
+    );
+    return data;
   },
 };

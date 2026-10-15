@@ -93,3 +93,43 @@ describe("deviceStore.retryEnrollment", () => {
     expect(useDeviceStore.getState().status).toBe("enrolled");
   });
 });
+
+describe("deviceStore.handleDeviceInvalidated — self-heal for a stale local device", () => {
+  beforeEach(() => { vi.clearAllMocks(); reset(); });
+
+  it("clears the cached deviceId and agentToken", async () => {
+    const deleteSpy = vi.spyOn(window.ewmp.secureStore, "delete").mockResolvedValue(undefined);
+    useDeviceStore.setState({ status: "enrolled", error: null });
+
+    await useDeviceStore.getState().handleDeviceInvalidated();
+
+    expect(deleteSpy).toHaveBeenCalledWith("deviceId");
+    expect(deleteSpy).toHaveBeenCalledWith("agentToken");
+  });
+
+  it("falls back to needs_finish (not needs_consent) so consent is never re-asked", async () => {
+    vi.spyOn(window.ewmp.secureStore, "delete").mockResolvedValue(undefined);
+    useDeviceStore.setState({ status: "enrolled", error: null });
+
+    await useDeviceStore.getState().handleDeviceInvalidated();
+
+    expect(useDeviceStore.getState().status).toBe("needs_finish");
+    expect(useDeviceStore.getState().error).toMatch(/expired|re-register/i);
+  });
+
+  it("a subsequent retryEnrollment() re-enrolls cleanly and reaches enrolled again", async () => {
+    vi.spyOn(window.ewmp.secureStore, "delete").mockResolvedValue(undefined);
+    const setSpy = vi.spyOn(window.ewmp.secureStore, "set").mockResolvedValue(undefined);
+    vi.spyOn(deviceService, "getHardwareInfo").mockResolvedValue(HW);
+    vi.spyOn(deviceService, "selfEnroll").mockResolvedValue({ device_id: "d2", agent_token: "tok2" });
+    useDeviceStore.setState({ status: "enrolled", error: null });
+
+    await useDeviceStore.getState().handleDeviceInvalidated();
+    expect(useDeviceStore.getState().status).toBe("needs_finish");
+
+    await useDeviceStore.getState().retryEnrollment();
+
+    expect(setSpy).toHaveBeenCalledWith("deviceId", "d2");
+    expect(useDeviceStore.getState().status).toBe("enrolled");
+  });
+});
