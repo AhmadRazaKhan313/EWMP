@@ -120,6 +120,21 @@ def _patch_repos(monkeypatch):
 # ── GET /attendance ────────────────────────────────────────────────────────
 
 class TestListAttendanceSelfView:
+    def test_full_view_maps_employee_name_from_joined_user(self):
+        record = AttendanceRecord(
+            id=uuid.uuid4(), tenant_id=TENANT, employee_id=OWN_EMP, date=date(2026, 3, 1),
+            status=AttendanceStatus.PRESENT,
+        )
+        user = SimpleNamespace(display_name="Jordan Rivera", first_name="Jordan", last_name="Rivera")
+        db = _FakeDB([_FakeResult(rows=[(record, user)]), _FakeResult(count=1)])
+
+        result = _run(attendance_mod.list_attendance(
+            None, None, None, None, 1, 25,
+            _user(permissions={"attendance.view"}), TENANT, db,
+        ))
+
+        assert result["items"][0]["employee_name"] == "Jordan Rivera"
+
     def test_view_own_forces_employee_id_to_self_ignoring_query_param(self):
         record = AttendanceRecord(
             id=uuid.uuid4(), tenant_id=TENANT, employee_id=OWN_EMP, date=date(2026, 3, 1),
