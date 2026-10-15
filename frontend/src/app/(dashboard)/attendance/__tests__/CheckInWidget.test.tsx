@@ -189,6 +189,21 @@ describe("CheckInWidget — live status + timers (synced with desktop app)", () 
     });
   });
 
+  it("the timer shows TIME WORKED: it pauses during a break, like the desktop app and the widget", async () => {
+    // Checked in 1 h ago; 10 minutes of finished breaks + a 5-minute break in progress.
+    (apiClient.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        id: "s1", employee_id: "e1", status: "on_break", total_minutes: null,
+        started_at: new Date(Date.now() - 3600_000).toISOString(),
+        total_break_seconds: 600,
+        current_break_started_at: new Date(Date.now() - 300_000).toISOString(),
+      },
+    });
+    renderWidget();
+    // 60 min - 10 min - 5 min = 45 min worked. (It used to read 01:00:00: break time counted as work.)
+    await waitFor(() => expect(screen.getByTestId("timer-display")).toHaveTextContent(/On break — 00:45:0\d/));
+  });
+
   it("shows the total time worked in the toast after checking out", async () => {
     mockActiveSession();
     (apiClient.post as ReturnType<typeof vi.fn>).mockResolvedValue({

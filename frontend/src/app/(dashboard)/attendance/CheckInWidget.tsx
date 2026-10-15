@@ -5,16 +5,13 @@ import { MapPin, LogIn, LogOut, Loader2, Clock, Coffee } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import apiClient from "@/services/api-client";
+import {
+  ACTIVE_SESSION_KEY,
+  ATTENDANCE_QUERY_OPTIONS,
+  fetchActiveSession,
+  sessionClock,
+} from "@/services/attendanceSession.service";
 import { Card } from "@/components/atoms";
-
-interface ActiveWorkSession {
-  id: string;
-  employee_id: string;
-  started_at: string;
-  ended_at: string | null;
-  status: "active" | "on_break" | "ended";
-  total_minutes: number | null;
-}
 
 function formatElapsed(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -33,32 +30,29 @@ function formatElapsed(totalSeconds: number): string {
 // the single source of truth shared with the desktop app (backend keeps
 // AttendanceRecord and WorkSession in sync on either side, see
 // app/services/attendance_sync.py), so a check-in from the desktop app
-// shows up here automatically on the next poll, and vice versa.
+// shows up here within seconds, and vice versa. The number shown is TIME
+// WORKED -- it pauses during a break, exactly like the desktop app and the
+// floating widget (it used to keep running through breaks, so the same session
+// read differently here).
 export function CheckInWidget() {
   const qc = useQueryClient();
   const [locating, setLocating] = useState(false);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
 
   const { data: session } = useQuery({
-    queryKey: ["work-session", "active"],
-    queryFn: async () => (await apiClient.get<ActiveWorkSession | null>("/work-sessions/me/active")).data,
-    refetchInterval: 15000, // picks up a desktop check-in/out within ~15s
+    queryKey: ACTIVE_SESSION_KEY,
+    queryFn: fetchActiveSession,
+    ...ATTENDANCE_QUERY_OPTIONS,
   });
 
-  const isOnBreak = session?.status === "on_break";
-  const isCheckedIn = !!session && (session.status === "active" || isOnBreak);
+  const { isCheckedIn, isOnBreak, workedSeconds: elapsedSeconds } = sessionClock(session, now);
 
   useEffect(() => {
-    if (!isCheckedIn || !session) {
-      setElapsedSeconds(0);
-      return;
-    }
-    const startedAt = new Date(session.started_at).getTime();
-    const tick = (): void => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
-    tick();
-    const id = setInterval(tick, 1000);
+    if (!isCheckedIn) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [isCheckedIn, session]);
+  }, [isCheckedIn]);
 
   const checkIn = useMutation({
     mutationFn: (coords?: { latitude: number; longitude: number }) =>
