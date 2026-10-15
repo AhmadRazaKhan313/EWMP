@@ -10,8 +10,14 @@ Protected routes: /me, /change-password, /logout, /2fa/*
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.client_ip import get_client_ip
+from app.core.config import settings
 from app.core.database import get_db
-from app.permissions.dependencies import get_current_user, get_current_verified_user
+from app.core.rate_limit import enforce_rate_limit, ip_rate_limit
+from app.permissions.dependencies import (
+    get_current_user,
+    get_current_user_allow_password_change,
+)
 from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
@@ -19,6 +25,7 @@ from app.schemas.auth import (
     ForgotPasswordSchema,
     InviteRegisterSchema,
     LoginSchema,
+    LogoutSchema,
     MeResponse,
     OrganizationRegisterSchema,
     ProfileUpdateSchema,
@@ -32,11 +39,19 @@ from app.services.auth import AuthService
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-def _get_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("X-Forwarded-For")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+# Client IP comes from core.client_ip: X-Forwarded-For is only believed when
+# TRUSTED_PROXY_COUNT > 0 (otherwise any client could forge it to dodge the
+# per-IP limits below and to spoof `last_login_ip`).
+_get_client_ip = get_client_ip
+
+# Per-IP throttles for the low-volume public endpoints. One bucket per endpoint,
+# so hitting one never eats another's budget.
+_auth_limit = lambda: settings.RATE_LIMIT_AUTH_REQUESTS_PER_MINUTE  # noqa: E731
+_register_limit = ip_rate_limit("register", _auth_limit)
+_verify_email_limit = ip_rate_limit("verify-email", _auth_limit)
+_forgot_limit = ip_rate_limit("forgot-password", _auth_limit)
+_reset_limit = ip_rate_limit("reset-password", _auth_limit)
+_resend_verification_ip_limit = ip_rate_limit("resend-verification", _auth_limit)
 
 
 # ── Public ────────────────────────────────────────────────────────────────────
@@ -46,6 +61,7 @@ def _get_client_ip(request: Request) -> str:
     response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new organization",
+    dependencies=[Depends(_register_limit)],
 )
 async def register_organization(
     data: OrganizationRegisterSchema,
@@ -74,10 +90,25 @@ async def login(
     """
     Authenticate with email + password and receive JWT tokens.
 
-    Accounts are locked for 30 minutes after 5 consecutive failures.
+    Protections, in order:
+      1. Per-IP rate limit (generous — offices share one IP).
+      2. Per-email rate limit (tight — this is what stops password guessing).
+      3. Account lockout: 30 minutes after 5 consecutive failures
+         (LOGIN_LOCKOUT_ENABLED, on by default).
+    Over a rate limit the response is 429 with a `Retry-After` header.
     """
+    client_ip = _get_client_ip(request)
+    await enforce_rate_limit(
+        "login-ip", client_ip, limit=settings.RATE_LIMIT_LOGIN_PER_IP_PER_MINUTE
+    )
+    await enforce_rate_limit(
+        "login-email",
+        data.email,
+        limit=settings.RATE_LIMIT_LOGIN_PER_EMAIL_PER_MINUTE,
+        hashed=True,
+    )
     service = AuthService(db)
-    return await service.login(data, client_ip=_get_client_ip(request))
+    return await service.login(data, client_ip=client_ip)
 
 
 @router.post(
@@ -98,6 +129,7 @@ async def refresh_token(
     "/verify-email",
     status_code=status.HTTP_200_OK,
     summary="Verify email address",
+    dependencies=[Depends(_verify_email_limit)],
 )
 async def verify_email(
     data: VerifyEmailSchema,
@@ -110,9 +142,34 @@ async def verify_email(
 
 
 @router.post(
+    "/resend-verification",
+    status_code=status.HTTP_200_OK,
+    summary="Email a new verification link to the signed-in user",
+    dependencies=[Depends(_resend_verification_ip_limit)],
+)
+async def resend_verification(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """For a signed-in user whose email isn't verified yet — the email was
+    lost, went to spam, or the link was already replaced. Needs only
+    `get_current_user` (NOT verification, which is the whole point).
+    Limited to 3 per user per 10 minutes on top of the per-IP limit, so it
+    can't be used to flood someone's inbox."""
+    from app.core.rate_limit import enforce_rate_limit
+
+    await enforce_rate_limit("resend-verification-user", str(user.id), limit=3, window=600)
+    sent = await AuthService(db).resend_verification(user)
+    if not sent:
+        return {"message": "Your email address is already verified"}
+    return {"message": f"A new verification link has been sent to {user.email}"}
+
+
+@router.post(
     "/forgot-password",
     status_code=status.HTTP_200_OK,
     summary="Request a password reset email",
+    dependencies=[Depends(_forgot_limit)],
 )
 async def forgot_password(
     data: ForgotPasswordSchema,
@@ -124,6 +181,15 @@ async def forgot_password(
     Always returns 200 regardless of whether the email exists,
     to prevent user enumeration.
     """
+    # Applies to EVERY address equally (whether registered or not), so it can't
+    # be used to probe which emails exist — it only stops inbox-bombing.
+    await enforce_rate_limit(
+        "forgot-email",
+        data.email,
+        limit=settings.RATE_LIMIT_FORGOT_PASSWORD_PER_EMAIL_PER_HOUR,
+        window=3600,
+        hashed=True,
+    )
     service = AuthService(db)
     await service.request_password_reset(data.email)
     return {"message": "If this email is registered, a reset link has been sent"}
@@ -133,6 +199,7 @@ async def forgot_password(
     "/reset-password",
     status_code=status.HTTP_200_OK,
     summary="Reset password using a token",
+    dependencies=[Depends(_reset_limit)],
 )
 async def reset_password(
     data: ResetPasswordSchema,
@@ -152,7 +219,9 @@ async def reset_password(
     summary="Get current user profile",
 )
 async def get_me(
-    user: User = Depends(get_current_user),
+    # Reachable on a temporary password: the UI reads must_change_password
+    # from here to know it has to show the change-password screen.
+    user: User = Depends(get_current_user_allow_password_change),
     db: AsyncSession = Depends(get_db),
 ) -> MeResponse:
     """Return the authenticated user's profile and permission set."""
@@ -183,6 +252,13 @@ async def get_me(
         permissions=sorted(all_permissions),
         has_full_access=user.has_full_access,
         has_employee_profile=has_employee_profile,
+        must_change_password=user.must_change_password,
+        is_email_verified=user.is_email_verified,
+        # Lets the UI decide whether to show the "verify your email" banner;
+        # platform admins are never gated, so it's False for them.
+        email_verification_required=(
+            settings.REQUIRE_EMAIL_VERIFICATION and not user.is_platform_admin
+        ),
         preferences=user.preferences or {},
     )
 
@@ -236,6 +312,13 @@ async def update_me(
         permissions=sorted(all_permissions),
         has_full_access=user.has_full_access,
         has_employee_profile=has_employee_profile,
+        must_change_password=user.must_change_password,
+        is_email_verified=user.is_email_verified,
+        # Lets the UI decide whether to show the "verify your email" banner;
+        # platform admins are never gated, so it's False for them.
+        email_verification_required=(
+            settings.REQUIRE_EMAIL_VERIFICATION and not user.is_platform_admin
+        ),
         preferences=user.preferences or {},
     )
 
@@ -310,36 +393,44 @@ async def get_avatar(user_id: str, db: AsyncSession = Depends(get_db)) -> Respon
 )
 async def change_password(
     data: ChangePasswordSchema,
-    user: User = Depends(get_current_verified_user),
+    # NOT get_current_verified_user: an invited employee must replace the
+    # temporary password on first login, before (or without) verifying
+    # their email — proving the current password is what matters here.
+    # Requiring verification made the force-change screen a dead end
+    # (audit C-3).
+    user: User = Depends(get_current_user_allow_password_change),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Change the current user's password. Requires current password confirmation."""
-    from app.core.security import verify_password, hash_password
-    from app.core.exceptions import InvalidCredentialsError
-    from app.repositories.user import UserRepository
+    """Change the current user's password. Requires current password confirmation.
 
-    if not user.password_hash or not verify_password(data.current_password, user.password_hash):
-        raise InvalidCredentialsError("Current password is incorrect")
-
-    repo = UserRepository(db)
-    await repo.update(user.id, {"password_hash": hash_password(data.new_password)})
-    return {"message": "Password changed successfully"}
+    Every other session of the account is signed out. The response carries a
+    fresh token pair for THIS device, which the client must store -- the
+    tokens it was using are no longer valid.
+    """
+    tokens = await AuthService(db).change_password(
+        user, data.current_password, data.new_password
+    )
+    return {
+        "message": "Password changed successfully",
+        "tokens": tokens.model_dump(),
+    }
 
 
 @router.post(
     "/logout",
     status_code=status.HTTP_200_OK,
-    summary="Logout (client-side token discard)",
+    summary="Logout (revokes this session's refresh token)",
 )
 async def logout(
-    user: User = Depends(get_current_user),
+    data: LogoutSchema | None = None,
+    user: User = Depends(get_current_user_allow_password_change),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
-    Logout endpoint.
-
-    Since JWTs are stateless, true server-side revocation requires a
-    token blacklist (Redis). For now this confirms the request and
-    instructs the client to discard its tokens. Redis-based revocation
-    can be wired in without changing this endpoint's contract.
+    End the session the posted `refresh_token` belongs to, so it can never be
+    refreshed again (audit H-6). The short-lived access token simply expires.
+    The body is optional only so older clients keep working; they still
+    discard their tokens locally.
     """
+    await AuthService(db).logout(user, data.refresh_token if data else None)
     return {"message": "Logged out successfully"}

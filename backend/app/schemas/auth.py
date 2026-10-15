@@ -80,6 +80,12 @@ class RefreshTokenSchema(BaseModel):
     refresh_token: str
 
 
+class LogoutSchema(BaseModel):
+    """Body of POST /auth/logout: the refresh token of the session to end."""
+
+    refresh_token: str | None = None
+
+
 class MagicLinkRequestSchema(BaseModel):
     email: EmailStr
 
@@ -162,6 +168,7 @@ class UserInToken(BaseModel):
     roles: list[str]
     permissions: list[str]
     has_full_access: bool = False
+    must_change_password: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -189,6 +196,9 @@ class MeResponse(BaseModel):
     permissions: list[str]
     has_full_access: bool = False
     has_employee_profile: bool = False
+    must_change_password: bool = False
+    is_email_verified: bool = False
+    email_verification_required: bool = False
     preferences: dict
 
     model_config = {"from_attributes": True}

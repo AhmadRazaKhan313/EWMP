@@ -15,6 +15,7 @@ from app.core.exceptions import (
     AccountDisabledError,
     AuthenticationError,
     InvalidTokenError,
+    PasswordChangeRequiredError,
     PermissionDeniedError,
     TenantAccessDeniedError,
 )
@@ -37,11 +38,17 @@ async def _get_token_payload(
     return payload
 
 
-async def get_current_user(
+async def get_current_user_allow_password_change(
     request: Request,
     payload: dict = Depends(_get_token_payload),
     db: AsyncSession = Depends(get_db),
 ) -> User:
+    """Authenticate the caller WITHOUT the must-change-password gate.
+
+    Only for the handful of endpoints a user on a temporary password has to be
+    able to reach: GET /auth/me, POST /auth/change-password, POST /auth/logout.
+    Everything else uses get_current_user below.
+    """
     user_id_str = payload.get("sub")
     if not user_id_str:
         raise InvalidTokenError("Token missing subject claim")
@@ -68,6 +75,30 @@ async def get_current_user(
         raise AccountDisabledError(
             "This organization's account has been suspended. Please contact your administrator."
         )
+    # Password changed / reset since this token was issued -> it is dead.
+    # Compared at whole-second precision because a JWT's `iat` has no
+    # sub-second part; a token minted in the same second as the change (the
+    # fresh one change-password returns) must survive.
+    if user.tokens_valid_after is not None:
+        iat = payload.get("iat")
+        if iat is None or int(iat) < int(user.tokens_valid_after.timestamp()):
+            raise InvalidTokenError(
+                "Your session has ended. Please sign in again."
+            )
+    return user
+
+
+async def get_current_user(
+    user: User = Depends(get_current_user_allow_password_change),
+) -> User:
+    """The authenticated user, for every endpoint that does real work.
+
+    An account on a temporary password (new employee, admin-created owner) may
+    do nothing but change it -- this used to be enforced only by a modal in the
+    web/desktop UI, so the API itself was fully usable (audit H-6).
+    """
+    if user.must_change_password:
+        raise PasswordChangeRequiredError()
     return user
 
 

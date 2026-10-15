@@ -135,6 +135,28 @@ class User(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
         index=True,
         comment="True only for the seeded platform super admin",
     )
+    tokens_valid_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment=(
+            "Access tokens issued before this instant are rejected. Set when "
+            "the password changes/resets so already-issued tokens stop "
+            "working at once instead of living out their expiry."
+        ),
+    )
+    must_change_password: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        comment=(
+            "True when the current password was set by someone else "
+            "(e.g. a randomly generated temporary password handed to a "
+            "new employee/owner at creation time). While true, the "
+            "frontend and desktop app force a change-password screen "
+            "before anything else is usable. Cleared automatically the "
+            "next time the user successfully changes their password."
+        ),
+    )
 
     # ── Email verification ────────────────────────────────────────
     email_verification_token: Mapped[str | None] = mapped_column(
@@ -263,3 +285,41 @@ class User(UUIDMixin, TimestampMixin, SoftDeleteMixin, Base):
             any(p.codename == permission_codename for p in role.permissions)
             for role in self.roles
         )
+
+
+class RefreshSession(Base):
+    """One issued refresh token (audit H-6).
+
+    A login starts a *family* (= one session); every refresh marks the token
+    it was given as used and issues the next one in the same family. That makes
+    refresh tokens single-use -- presenting a used one again means it was
+    copied, so the whole family is revoked. Logout, a password change/reset and
+    disabling the account revoke families too, which a bare JWT could never do.
+    """
+
+    __tablename__ = "auth_refresh_tokens"
+
+    jti: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    family_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    # Absolute end of the whole session; copied unchanged to every rotation.
+    session_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
