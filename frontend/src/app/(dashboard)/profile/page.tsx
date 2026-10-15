@@ -7,7 +7,7 @@ import { useAuthStore } from "@/store/auth.store";
 import { authService } from "@/services/auth.service";
 
 const inputClass =
-  "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm text-[hsl(var(--foreground))] outline-none focus:border-[hsl(var(--border-strong))]";
+  "w-full rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] shadow-[var(--shadow-xs)] px-3 py-2 text-sm text-[hsl(var(--foreground))] outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
 
 function Field({
   label,

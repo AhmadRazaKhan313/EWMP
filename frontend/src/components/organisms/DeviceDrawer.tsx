@@ -148,14 +148,14 @@ export function DeviceDrawer({ deviceId, onClose }: { deviceId: string; onClose:
         ) : (
           <>
             {/* Tabs */}
-            <div className="flex gap-1 border-b border-[hsl(var(--border))] px-6">
+            <div className="flex gap-4 border-b border-[hsl(var(--border))] px-6">
               {(["overview", "metrics", "screen", "alerts", "allowed", "processes"] as const).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
-                  className={`border-b-2 px-3 py-2.5 text-xs font-medium capitalize transition-colors ${
+                  className={`-mb-px border-b-2 px-1 py-2.5 text-sm font-semibold capitalize transition-colors ${
                     tab === t
-                      ? "border-[hsl(var(--primary))] text-[hsl(var(--primary))]"
+                      ? "border-[hsl(var(--brand-600))] text-[hsl(var(--accent-foreground))]"
                       : "border-transparent text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]"
                   }`}
                 >
@@ -489,8 +489,9 @@ function ScreenTab({
     <div className="space-y-4">
       <div className="flex items-start gap-2 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background-subtle))] p-3 text-xs text-[hsl(var(--foreground-muted))]">
         <Camera size={13} className="mt-0.5 shrink-0" />
-        On-demand only — no continuous recording. Each capture is a single point-in-time
-        screenshot, timestamped and tied to whoever requested it.
+        A screenshot is taken automatically about once a minute while the device is connected, and
+        whenever you request one. Each capture is a still image — no recording. Old captures are
+        deleted after a few days.
       </div>
 
       <button
@@ -547,6 +548,7 @@ function ScreenTab({
                     }`}
                   >
                     {fmtDate(s.captured_at)}
+                    <span className="ml-1 opacity-70">{s.requested_by_id ? "· manual" : "· auto"}</span>
                   </button>
                 ))}
               </div>

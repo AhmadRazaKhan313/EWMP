@@ -21,7 +21,7 @@ const PROVIDERS: { id: AIProvider; label: string; needsKey: boolean; defaultMode
 ];
 
 function inputClass() {
-  return "h-9 w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))] disabled:opacity-50";
+  return "h-9 w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))] disabled:opacity-50";
 }
 
 function Field({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {

@@ -9,7 +9,6 @@ import { toast } from "sonner";
 import apiClient from "@/services/api-client";
 import { DataTable } from "@/components/molecules/DataTable";
 import { Badge, Button, Card, EmptyState, PageHeader, StatusDot } from "@/components/atoms";
-import { DeviceDrawer } from "@/components/organisms/DeviceDrawer";
 import type { Device } from "@/types";
 
 // ── Enrollment modal ───────────────────────────────────────────────────────
@@ -190,7 +189,6 @@ const columns: ColumnDef<Device, unknown>[] = [
 export default function DevicesPage() {
   const router = useRouter();
   const [showEnroll, setShowEnroll] = useState(false);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const { data, isLoading } = useQuery({
     queryKey: ["devices"],
     queryFn: async () => {
@@ -265,7 +263,7 @@ export default function DevicesPage() {
         columns={columns}
         isLoading={isLoading}
         searchPlaceholder="Search by hostname or IP…"
-        onRowClick={(row) => setSelectedDeviceId(row.id)}
+        onRowClick={(row) => router.push(`/devices/${row.id}`)}
         emptyState={
           <EmptyState
             icon={Monitor}
@@ -277,9 +275,6 @@ export default function DevicesPage() {
       />
 
       {showEnroll && <EnrollDeviceModal onClose={() => setShowEnroll(false)} />}
-      {selectedDeviceId && (
-        <DeviceDrawer deviceId={selectedDeviceId} onClose={() => setSelectedDeviceId(null)} />
-      )}
     </div>
   );
 }

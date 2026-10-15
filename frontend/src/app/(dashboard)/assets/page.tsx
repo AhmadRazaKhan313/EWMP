@@ -26,9 +26,9 @@ export default function AssetsPage() {
   const [form, setForm] = useState({ name:"", asset_tag:"", category:"Laptop", brand:"", model:"", serial_number:"", purchase_cost:"", purchase_date:"", warranty_expiry:"", location:"" });
 
   const { data, isLoading } = useQuery({ queryKey:["assets"], queryFn: async () => { const {data} = await apiClient.get("/assets"); return data; }});
-  const create = useMutation({ mutationFn: (b:object) => apiClient.post("/assets", b), onSuccess: () => { toast.success("Asset created"); void qc.invalidateQueries({queryKey:["assets"]}); setShowForm(false); setForm({name:"",asset_tag:"",category:"Laptop",brand:"",model:"",serial_number:"",purchase_cost:"",purchase_date:"",warranty_expiry:"",location:""}); }, onError: ()=>toast.error("Failed to create asset") });
+  const create = useMutation({ mutationFn: (b:object) => apiClient.post("/assets", b), onSuccess: () => { toast.success("Asset created"); void qc.invalidateQueries({queryKey:["assets"]}); setShowForm(false); setForm({name:"",asset_tag:"",category:"Laptop",brand:"",model:"",serial_number:"",purchase_cost:"",purchase_date:"",warranty_expiry:"",location:""}); }, onError: (err) => toast.error((err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "Failed to create asset") });
 
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
   const assets = data?.items ?? [];
   const available = assets.filter((a:any)=>a.status==="available").length;
   const assigned = assets.filter((a:any)=>a.status==="assigned").length;
