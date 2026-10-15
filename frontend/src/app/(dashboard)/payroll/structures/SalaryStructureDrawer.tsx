@@ -37,7 +37,7 @@ function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
       {...props}
       className={cn(
         "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2.5 py-1.5 text-sm outline-none",
-        "focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1 hover:border-[hsl(var(--border-strong))]",
+        "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))] hover:border-[hsl(var(--border-strong))]",
         props.className,
       )}
     />
@@ -48,7 +48,7 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <select
       {...props}
-      className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2.5 py-1.5 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1"
+      className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2.5 py-1.5 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]"
     />
   );
 }
