@@ -22,23 +22,21 @@ ensure_attendance_checked_in/out from the /work-sessions endpoints, so
 BOTH sides always end up in a consistent state no matter which app the
 employee used.
 """
-from datetime import UTC, date, datetime
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+from datetime import UTC, date, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance import AttendanceRecord, AttendanceSource, AttendanceStatus, Shift
 from app.models.employee import Employee
 from app.models.work_session import BreakRecord, WorkSession, WorkSessionStatus
 
-
-def _minutes_late(shift: Shift, check_in_at: datetime) -> int:
-    local_time = check_in_at.time()
-    scheduled_minutes = shift.start_time.hour * 60 + shift.start_time.minute
-    actual_minutes = local_time.hour * 60 + local_time.minute
-    late = actual_minutes - scheduled_minutes - shift.late_grace_minutes
-    return max(0, late)
+if TYPE_CHECKING:  # runtime import would be circular (attendance_punches imports this lazily)
+    from app.services.attendance_punches import CutoffPolicy
 
 
 def _scheduled_minutes(shift: Shift) -> int:
@@ -49,21 +47,27 @@ def _scheduled_minutes(shift: Shift) -> int:
     return max(0, end - start - shift.break_duration_minutes)
 
 
+def session_break_minutes(session: WorkSession | None) -> int:
+    """Break time inside an ENDED session: wall time minus the session's
+    break-excluded total. 0 when there is no ended session."""
+    if session is None or session.ended_at is None or session.total_minutes is None:
+        return 0
+    elapsed = int((session.ended_at - session.started_at).total_seconds() // 60)
+    return max(0, elapsed - session.total_minutes)
+
+
 async def ensure_work_session_started(
     db: AsyncSession, tenant_id: UUID, employee_id: UUID, *, started_at: datetime | None = None
 ) -> WorkSession:
     """Idempotent: called when the employee checks in via /attendance (web),
     so the desktop app's timer picks up the same session on its next poll."""
-    existing = (
-        await db.execute(
-            select(WorkSession).where(
-                WorkSession.tenant_id == tenant_id,
-                WorkSession.employee_id == employee_id,
-                WorkSession.status != WorkSessionStatus.ENDED,
-                WorkSession.is_deleted == False,  # noqa: E712
-            )
-        )
-    ).scalar_one_or_none()
+    lookup = select(WorkSession).where(
+        WorkSession.tenant_id == tenant_id,
+        WorkSession.employee_id == employee_id,
+        WorkSession.status != WorkSessionStatus.ENDED,
+        WorkSession.is_deleted == False,  # noqa: E712
+    )
+    existing = (await db.execute(lookup)).scalar_one_or_none()
     if existing is not None:
         return existing
 
@@ -73,8 +77,14 @@ async def ensure_work_session_started(
         started_at=started_at or datetime.now(UTC),
         status=WorkSessionStatus.ACTIVE,
     )
-    db.add(session)
-    await db.flush()
+    try:
+        # uq_work_sessions_one_active_per_employee (audit H-2): a timer
+        # started concurrently from the other app wins; use that one.
+        async with db.begin_nested():
+            db.add(session)
+            await db.flush()
+    except IntegrityError:
+        return (await db.execute(lookup)).scalar_one()
     return session
 
 
@@ -131,89 +141,193 @@ async def ensure_attendance_checked_in(
     source: AttendanceSource,
     checked_in_at: datetime | None = None,
 ) -> AttendanceRecord:
-    """Idempotent: called when the employee starts their timer via the
-    desktop app, so the web Attendance table/report shows the same
-    check-in without the employee having to also click Check In on web."""
+    """
+    Called when the employee starts their timer via the desktop app, so
+    the web Attendance table/report shows the same check-in without the
+    employee having to also click Check In on the website.
+
+    BUG THIS FIXES: this used to write straight onto
+    `AttendanceRecord.check_in` and returned early whenever that column
+    was already set for today — which is every time after the day's
+    FIRST desktop check-in. A second work session started later the same
+    day (after lunch, after stepping out) silently vanished: the function
+    saw `existing.check_in is not None`, returned the untouched record,
+    and nothing about the new session was ever recorded. The employee's
+    desktop timer looked fine because WorkSession itself was tracking it
+    correctly — only the attendance side, and everything downstream of
+    it (the dashboard's daily summary, payroll's total_minutes), stayed
+    frozen at the first punch of the day.
+
+    Now delegates to the same open_punch() the web /attendance/check-in
+    endpoint uses, so a desktop check-in and a web check-in are the same
+    operation regardless of which app made it, and both correctly add a
+    new punch rather than silently no-op-ing on every one after the
+    first.
+    """
+    from app.services.attendance_punches import get_open_punch, open_punch
+
     now = checked_in_at or datetime.now(UTC)
-    today = now.date()
 
-    existing = (
-        await db.execute(
-            select(AttendanceRecord).where(
-                AttendanceRecord.employee_id == employee.id,
-                AttendanceRecord.tenant_id == tenant_id,
-                AttendanceRecord.date == today,
-                AttendanceRecord.is_deleted == False,  # noqa: E712
+    # Idempotent: if a punch is already open (started from the OTHER
+    # app a moment ago), do nothing rather than raising — this is a sync
+    # call, and two apps racing to report the same check-in is normal,
+    # not an error.
+    already_open = await get_open_punch(db, tenant_id, employee.id)
+    if already_open is not None:
+        return (
+            await db.execute(
+                select(AttendanceRecord).where(
+                    AttendanceRecord.id == already_open.attendance_record_id
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if existing is not None and existing.check_in is not None:
-        return existing
+        ).scalar_one()
 
-    late_minutes = 0
-    shift_id = employee.default_shift_id
-    if shift_id:
-        shift = (await db.execute(select(Shift).where(Shift.id == shift_id))).scalar_one_or_none()
-        if shift:
-            late_minutes = _minutes_late(shift, now)
-    attendance_status = AttendanceStatus.LATE if late_minutes > 0 else AttendanceStatus.PRESENT
-
-    if existing is not None:
-        existing.check_in = now
-        existing.check_in_source = source
-        existing.late_minutes = late_minutes
-        existing.status = attendance_status
-        existing.shift_id = shift_id
-        return existing
-
-    record = AttendanceRecord(
-        tenant_id=tenant_id,
-        employee_id=employee.id,
-        date=today,
-        check_in=now,
-        check_in_source=source,
-        late_minutes=late_minutes,
-        status=attendance_status,
-        shift_id=shift_id,
+    _, record = await open_punch(
+        db, tenant_id=tenant_id, employee_id=employee.id, at=now,
+        source=source, shift_id=employee.default_shift_id,
     )
-    db.add(record)
-    await db.flush()
     return record
 
 
 async def ensure_attendance_checked_out(
-    db: AsyncSession, tenant_id: UUID, employee_id: UUID, *, checked_out_at: datetime | None = None
+    db: AsyncSession,
+    tenant_id: UUID,
+    employee_id: UUID,
+    *,
+    checked_out_at: datetime | None = None,
+    break_minutes: int = 0,
 ) -> AttendanceRecord | None:
-    """Idempotent no-op if there's no open check-in — a web check-out that
-    fires with nothing open (e.g. already closed) has nothing to do."""
-    record = (
-        await db.execute(
-            select(AttendanceRecord).where(
-                AttendanceRecord.employee_id == employee_id,
-                AttendanceRecord.tenant_id == tenant_id,
-                AttendanceRecord.check_in.isnot(None),
-                AttendanceRecord.check_out.is_(None),
-                AttendanceRecord.is_deleted == False,  # noqa: E712
-            )
-            .order_by(AttendanceRecord.check_in.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if record is None:
+    """
+    Mirror of ensure_attendance_checked_in for the end of a desktop
+    session — same bug, same fix: this used to look for "today's" record
+    with check_out still null and close it directly, which is exactly
+    the single-open-punch-per-day assumption that silently dropped every
+    punch after the first. Delegates to close_punch() so a desktop
+    check-out and a web check-out are the same operation.
+
+    `break_minutes` lets the caller (work_sessions.py's end_session,
+    which already computed break time for its own total_minutes) pass
+    that through so the attendance punch's duration excludes it too —
+    without this, the desktop's own total and the synced attendance
+    total would disagree by however long the employee's breaks were.
+    """
+    from app.services.attendance_punches import close_punch, get_open_punch
+
+    open_punch = await get_open_punch(db, tenant_id, employee_id)
+    if open_punch is None:
         return None
 
     now = checked_out_at or datetime.now(UTC)
-    record.check_out = now
-    total_minutes = int((now - record.check_in).total_seconds() // 60)
-    record.total_minutes = total_minutes
+    _, record = await close_punch(
+        db, open_punch, at=now, source=AttendanceSource.DESKTOP_AGENT, break_minutes=break_minutes
+    )
+    return record
 
-    overtime_minutes = 0
-    if record.shift_id:
-        shift = (await db.execute(select(Shift).where(Shift.id == record.shift_id))).scalar_one_or_none()
-        if shift:
-            scheduled = _scheduled_minutes(shift)
-            overtime_minutes = max(0, total_minutes - scheduled)
-    record.overtime_minutes = overtime_minutes
+
+# ── Stale-attendance sweep (the ONE auto-close policy) ───────────────────────
+
+@dataclass
+class SweepResult:
+    punches_closed: int = 0
+    timers_stopped: int = 0          # timers of the punches closed above
+    orphan_timers_stopped: int = 0   # timers running with no attendance punch
+
+
+async def _stop_timer(db: AsyncSession, tenant_id: UUID, employee_id: UUID, at: datetime) -> bool:
+    """End an employee's running timer at `at`, crediting NOTHING — the same
+    "never invent worked time" rule the punch cutoff follows. Any hours are
+    restored only through an approved regularization of the punch."""
+    session = (
+        await db.execute(
+            select(WorkSession).where(
+                WorkSession.tenant_id == tenant_id,
+                WorkSession.employee_id == employee_id,
+                WorkSession.status != WorkSessionStatus.ENDED,
+                WorkSession.is_deleted == False,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+    if session is None:
+        return False
+    end_at = max(session.started_at, at)
+    open_breaks = (
+        await db.execute(
+            select(BreakRecord).where(BreakRecord.work_session_id == session.id, BreakRecord.ended_at.is_(None))
+        )
+    ).scalars().all()
+    for br in open_breaks:
+        br.ended_at = max(br.started_at, end_at)
+    session.ended_at = end_at
+    session.status = WorkSessionStatus.ENDED
+    session.total_minutes = 0
+    return True
+
+
+async def sweep_stale_attendance(
+    db: AsyncSession,
+    now: datetime | None = None,
+    policy: "CutoffPolicy | None" = None,
+) -> SweepResult:
+    """The single auto-close policy for forgotten check-outs (audit M-7).
+
+    There used to be two contradictory ones. A midnight task (the only one
+    actually scheduled) closed every timer AND attendance punch at local
+    midnight and CREDITED the hours up to it — cutting night shifts in half
+    at 00:00 and paying for hours nobody worked. The shift-aware punch
+    cutoff (credits nothing, marks MISSED_PUNCH, fixed via regularization)
+    existed only as a manual CLI command.
+
+    Now this runs on a schedule (Celery beat, app/workers/tasks/attendance.py;
+    also `python manage.py attendance-cutoff`):
+
+      1. run_auto_cutoff — punches past their cutoff (shift end + grace, or
+         the hard cap without a shift, in the organisation's timezone) are
+         force-closed with 0 minutes; the day becomes MISSED_PUNCH.
+      2. The desktop timer of each of those employees is stopped at the
+         same cutoff instant, also crediting nothing.
+      3. Timers still running with NO attendance punch behind them (data
+         left by older code) are stopped once they pass the hard cap.
+
+    Idempotent and safe to overlap with itself and with live check-ins/outs:
+    every change takes the same per-employee lock the endpoints take.
+    """
+    from app.services.attendance_punches import (
+        CutoffPolicy,
+        get_open_punch,
+        lock_employee_attendance,
+        run_auto_cutoff,
+    )
+
+    now = now or datetime.now(UTC)
+    policy = policy or CutoffPolicy()
+    result = SweepResult()
+
+    cut = await run_auto_cutoff(db, now=now, policy=policy)
+    result.punches_closed = cut.closed
+    for tenant_id, employee_id, cutoff_at in cut.closed_for:
+        if await _stop_timer(db, tenant_id, employee_id, cutoff_at):
+            result.timers_stopped += 1
+
+    too_old = now - timedelta(hours=policy.hard_cap_hours)
+    orphans = (
+        await db.execute(
+            select(WorkSession).where(
+                WorkSession.status != WorkSessionStatus.ENDED,
+                WorkSession.is_deleted == False,  # noqa: E712
+                WorkSession.started_at < too_old,
+            )
+        )
+    ).scalars().all()
+    for session in orphans:
+        await lock_employee_attendance(db, session.employee_id)
+        await db.refresh(session)
+        if session.status == WorkSessionStatus.ENDED:
+            continue
+        if await get_open_punch(db, session.tenant_id, session.employee_id) is not None:
+            continue  # its punch has not reached ITS cutoff yet; step 1 handles it later
+        cap_at = session.started_at + timedelta(hours=policy.hard_cap_hours)
+        if await _stop_timer(db, session.tenant_id, session.employee_id, cap_at):
+            result.orphan_timers_stopped += 1
 
     await db.flush()
-    return record
+    return result

@@ -12,11 +12,12 @@ dashboard fire six separate list-endpoint requests just to read `.total`
 off each — cheaper for both the client and the DB.
 """
 
-from datetime import date
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.timezones import local_today, org_zone
 
 from app.models.attendance import AttendanceRecord, AttendanceStatus, LeaveRequest, LeaveRequestStatus
 from app.models.devices import Asset, AssetStatus, Device, DeviceStatus
@@ -25,7 +26,8 @@ from app.models.helpdesk import SupportTicket, TicketStatus
 
 
 async def get_dashboard_stats(db: AsyncSession, tenant_id: UUID) -> dict:
-    today = date.today()
+    # The organisation's "today", not the server's (audit H-1).
+    today = local_today(await org_zone(db, tenant_id))
 
     total_employees = (
         await db.execute(
@@ -40,6 +42,10 @@ async def get_dashboard_stats(db: AsyncSession, tenant_id: UUID) -> dict:
             select(func.count()).where(
                 AttendanceRecord.tenant_id == tenant_id,
                 AttendanceRecord.date == today,
+                AttendanceRecord.is_deleted == False,  # noqa: E712
+                # A day row exists with default status PRESENT even before a
+                # check-in; only a real check-in (or HR's explicit entry) counts.
+                or_(AttendanceRecord.check_in.isnot(None), AttendanceRecord.is_regularized == True),  # noqa: E712
                 AttendanceRecord.status.in_([
                     AttendanceStatus.PRESENT,
                     AttendanceStatus.LATE,
