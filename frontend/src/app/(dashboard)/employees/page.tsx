@@ -6,11 +6,11 @@ import { UserPlus, Users, UserCheck, Clock, UserX } from "lucide-react";
 import type { EmployeeListItem } from "@/types";
 import { useEmployees, useEmployeeStats } from "@/services/employee.service";
 import { DataTable } from "@/components/molecules/DataTable";
-import { Badge, Button, Card, EmptyState, PageHeader, Skeleton, StatusDot } from "@/components/atoms";
-import { EmployeeDrawer } from "@/components/organisms/EmployeeDrawer";
+import { AvatarLabelGroup, Badge, Button, Card, EmptyState, PageHeader, Skeleton, StatusDot } from "@/components/atoms";
 import { useRouter } from "next/navigation";
 
 const statusConfig: Record<string, { label: string; variant: "success"|"warning"|"error"|"default"|"info" }> = {
+  regular:       { label: "Regular",        variant: "success" },
   active:        { label: "Active",        variant: "success" },
   probation:     { label: "Probation",     variant: "info" },
   on_leave:      { label: "On Leave",      variant: "warning" },
@@ -19,18 +19,28 @@ const statusConfig: Record<string, { label: string; variant: "success"|"warning"
   resigned:      { label: "Resigned",      variant: "error" },
 };
 
+function getDisplayStatus(employee: EmployeeListItem) {
+  if (employee.job_nature === "permanent") {
+    return { label: "Regular", variant: "success" as const };
+  }
+  return statusConfig[employee.employment_status] ?? {
+    label: employee.employment_status,
+    variant: "default" as const,
+  };
+}
+
 function StatCard({ icon: Icon, label, value, colorKey }: { icon: React.ElementType; label: string; value: number; colorKey: string }) {
   const bg: Record<string,string> = { green:"bg-[hsl(var(--success-subtle))]", yellow:"bg-[hsl(var(--warning-subtle))]", red:"bg-[hsl(var(--status-error-bg))]", gray:"bg-[hsl(var(--secondary))]" };
   const fg: Record<string,string> = { green:"text-[hsl(var(--success))]", yellow:"text-[hsl(var(--warning))]", red:"text-[hsl(var(--destructive))]", gray:"text-[hsl(var(--foreground-subtle))]" };
   return (
     <Card>
       <div className="flex items-center gap-3">
-        <div className={"flex h-9 w-9 items-center justify-center rounded-lg " + (bg[colorKey] ?? bg.gray)}>
-          <Icon size={16} className={fg[colorKey] ?? fg.gray} />
+        <div className={"flex h-10 w-10 items-center justify-center rounded-md " + (bg[colorKey] ?? bg.gray)}>
+          <Icon size={18} className={fg[colorKey] ?? fg.gray} />
         </div>
         <div>
-          <p className="text-xl font-semibold font-heading">{value}</p>
-          <p className="text-xs text-[hsl(var(--foreground-muted))]">{label}</p>
+          <p className="font-heading text-xl font-semibold text-[hsl(var(--foreground))]">{value}</p>
+          <p className="text-sm text-[hsl(var(--foreground-muted))]">{label}</p>
         </div>
       </div>
     </Card>
@@ -39,7 +49,6 @@ function StatCard({ icon: Icon, label, value, colorKey }: { icon: React.ElementT
 
 export default function EmployeesPage() {
   const router = useRouter();
-  const [drawerOpen, setDrawerOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [searchInput, setSearchInput] = useState("");
   const [query, setQuery] = useState("");
@@ -66,26 +75,14 @@ export default function EmployeesPage() {
       accessorFn: (r) => r.full_name,
       cell: ({ row }) => {
         const e = row.original;
-        const initials = ((e.first_name||"")[0]??"") + ((e.last_name||"")[0]??"");
-        return (
-          <div className="flex items-center gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[hsl(var(--secondary))] text-[11px] font-bold text-[hsl(var(--foreground-subtle))]">
-              {initials.toUpperCase()}
-            </div>
-            <div>
-              <p className="font-medium leading-tight">{e.full_name}</p>
-              <p className="font-mono text-[11px] text-[hsl(var(--foreground-muted))]">{e.employee_code}</p>
-            </div>
-          </div>
-        );
+        return <AvatarLabelGroup name={e.full_name} subtext={e.employee_code} size="sm" />;
       },
-      size: 220,
+      size: 240,
     },
     {
       id: "status", header: "Status", accessorKey: "employment_status",
-      cell: ({ getValue }) => {
-        const s = getValue<string>();
-        const cfg = statusConfig[s] ?? { label: s, variant: "default" as const };
+      cell: ({ row }) => {
+        const cfg = getDisplayStatus(row.original);
         return <Badge variant={cfg.variant}>{cfg.label}</Badge>;
       },
     },
@@ -112,7 +109,7 @@ export default function EmployeesPage() {
       <PageHeader
         title="Employees"
         description="Manage your workforce, employment details, and org structure."
-        action={<Button icon={<UserPlus size={15}/>} onClick={()=>setDrawerOpen(true)}>Add Employee</Button>}
+        action={<Button icon={<UserPlus size={15}/>} onClick={()=>router.push("/employees/new")}>Add Employee</Button>}
       />
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -146,12 +143,11 @@ export default function EmployeesPage() {
             icon={Users}
             title="No employees yet"
             description="Add your first employee to get started."
-            action={<Button icon={<UserPlus size={14}/>} onClick={()=>setDrawerOpen(true)}>Add First Employee</Button>}
+            action={<Button icon={<UserPlus size={14}/>} onClick={()=>router.push("/employees/new")}>Add First Employee</Button>}
           />
         }
       />
 
-      <EmployeeDrawer open={drawerOpen} onClose={()=>setDrawerOpen(false)}/>
     </div>
   );
 }

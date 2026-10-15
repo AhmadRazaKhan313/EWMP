@@ -3,16 +3,17 @@
 import { use } from "react";
 import { useRouter } from "next/navigation";
 import {
-  ArrowLeft, Mail, Phone, MapPin, Calendar, Briefcase,
-  Edit, UserX, Building2, Clock, CreditCard, Shield,
+  ArrowLeft, Mail, Phone, MapPin, Briefcase,
+  Edit, UserX, Clock, CreditCard, Shield,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import apiClient from "@/services/api-client";
-import { Badge, Button, Card, Skeleton } from "@/components/atoms";
+import { Avatar, Badge, Button, Card, PageHeader, Skeleton } from "@/components/atoms";
 import { EmployeeDrawer } from "@/components/organisms/EmployeeDrawer";
 
 const statusConfig: Record<string, { label: string; variant: "success" | "warning" | "error" | "info" | "default" }> = {
+  regular:       { label: "Regular",       variant: "success" },
   active:        { label: "Active",        variant: "success" },
   probation:     { label: "Probation",     variant: "info" },
   on_leave:      { label: "On Leave",      variant: "warning" },
@@ -23,9 +24,9 @@ const statusConfig: Record<string, { label: string; variant: "success" | "warnin
 
 function InfoRow({ label, value }: { label: string; value?: string | null }) {
   return (
-    <div className="flex justify-between py-2.5 border-b border-[hsl(var(--border))] last:border-0">
-      <span className="text-xs text-[hsl(var(--foreground-muted))]">{label}</span>
-      <span className="text-sm font-medium text-right">{value || "—"}</span>
+    <div className="flex justify-between gap-4 border-b border-[hsl(var(--border))] py-3 last:border-0">
+      <span className="text-sm text-[hsl(var(--foreground-muted))]">{label}</span>
+      <span className="text-right text-sm font-medium text-[hsl(var(--foreground))]">{value || "—"}</span>
     </div>
   );
 }
@@ -69,50 +70,42 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
     );
   }
 
-  const status = statusConfig[employee.employment_status] ?? { label: employee.employment_status, variant: "default" as const };
-  const initials = `${(employee.first_name || "")[0] ?? ""}${(employee.last_name || "")[0] ?? ""}`.toUpperCase();
+  const displayStatus = employee.job_nature === "permanent"
+    ? "permanent"
+    : employee.employment_status;
+  const status = statusConfig[displayStatus] ?? { label: displayStatus, variant: "default" as const };
+  const fullName = `${employee.first_name} ${employee.last_name}`;
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => router.back()}
-            className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-[hsl(var(--accent))] transition-colors"
-          >
-            <ArrowLeft size={16} />
+      <PageHeader
+        breadcrumb={
+          <button onClick={() => router.back()} className="flex items-center gap-1 hover:text-[hsl(var(--foreground-subtle))]">
+            <ArrowLeft size={14} /> Employees
           </button>
-          <div>
-            <h1 className="font-heading text-xl font-semibold">
-              {employee.first_name} {employee.last_name}
-            </h1>
-            <p className="text-sm text-[hsl(var(--foreground-muted))]">
-              {employee.employee_code}
-            </p>
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" icon={<UserX size={14} />} onClick={() => {}}>
-            Offboard
-          </Button>
-          <Button icon={<Edit size={14} />} onClick={() => setEditOpen(true)}>
-            Edit Profile
-          </Button>
-        </div>
-      </div>
+        }
+        title={fullName}
+        description={employee.employee_code}
+        action={
+          <>
+            <Button variant="outline" icon={<UserX size={14} />} onClick={() => {}}>
+              Offboard
+            </Button>
+            <Button icon={<Edit size={14} />} onClick={() => setEditOpen(true)}>
+              Edit Profile
+            </Button>
+          </>
+        }
+      />
 
       <div className="grid grid-cols-3 gap-6">
         {/* Left — Profile card */}
         <div className="space-y-4">
           <Card>
             <div className="flex flex-col items-center text-center">
-              {/* Avatar */}
-              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-[hsl(var(--primary))] text-2xl font-bold text-[hsl(var(--primary-foreground))]">
-                {initials}
-              </div>
-              <h2 className="mt-3 font-heading text-base font-semibold">
-                {employee.first_name} {employee.last_name}
+              <Avatar name={fullName} size="xl" />
+              <h2 className="mt-3 text-base font-semibold text-[hsl(var(--foreground))]">
+                {fullName}
               </h2>
               <p className="text-sm text-[hsl(var(--foreground-muted))]">
                 {employee.designation_id || "No designation"}
@@ -189,11 +182,11 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
         <div className="col-span-2 space-y-4">
           {/* Employment info */}
           <Card padding={false}>
-            <div className="flex items-center gap-2 border-b border-[hsl(var(--border))] px-5 py-4">
-              <Briefcase size={15} className="text-[hsl(var(--foreground-subtle))]" />
-              <h3 className="font-heading text-sm font-semibold">Employment Information</h3>
+            <div className="flex items-center gap-2 border-b border-[hsl(var(--border))] px-6 py-5">
+              <Briefcase size={16} className="text-[hsl(var(--foreground-subtle))]" />
+              <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Employment Information</h3>
             </div>
-            <div className="px-5 py-2">
+            <div className="px-6 py-2">
               <InfoRow label="Employee Code" value={employee.employee_code} />
               <InfoRow label="Date of Joining" value={employee.date_of_joining
                 ? new Date(employee.date_of_joining).toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" })
@@ -207,11 +200,11 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
 
           {/* Personal info */}
           <Card padding={false}>
-            <div className="flex items-center gap-2 border-b border-[hsl(var(--border))] px-5 py-4">
-              <Shield size={15} className="text-[hsl(var(--foreground-subtle))]" />
-              <h3 className="font-heading text-sm font-semibold">Personal Information</h3>
+            <div className="flex items-center gap-2 border-b border-[hsl(var(--border))] px-6 py-5">
+              <Shield size={16} className="text-[hsl(var(--foreground-subtle))]" />
+              <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Personal Information</h3>
             </div>
-            <div className="px-5 py-2">
+            <div className="px-6 py-2">
               <InfoRow label="Date of Birth" value={employee.date_of_birth
                 ? new Date(employee.date_of_birth).toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" })
                 : null} />
@@ -226,11 +219,11 @@ export default function EmployeeDetailPage({ params }: { params: Promise<{ id: s
           {/* Emergency contact */}
           {employee.emergency_contact && (
             <Card padding={false}>
-              <div className="flex items-center gap-2 border-b border-[hsl(var(--border))] px-5 py-4">
-                <Phone size={15} className="text-[hsl(var(--foreground-subtle))]" />
-                <h3 className="font-heading text-sm font-semibold">Emergency Contact</h3>
+              <div className="flex items-center gap-2 border-b border-[hsl(var(--border))] px-6 py-5">
+                <Phone size={16} className="text-[hsl(var(--foreground-subtle))]" />
+                <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Emergency Contact</h3>
               </div>
-              <div className="px-5 py-2">
+              <div className="px-6 py-2">
                 <InfoRow label="Name" value={employee.emergency_contact?.name} />
                 <InfoRow label="Phone" value={employee.emergency_contact?.phone} />
                 <InfoRow label="Relationship" value={employee.emergency_contact?.relationship} />

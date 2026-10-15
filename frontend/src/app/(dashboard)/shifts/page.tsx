@@ -1,11 +1,12 @@
 "use client";
 import { useState } from "react";
-import { Clock, Plus, Trash2, Moon, Sun } from "lucide-react";
+import { Clock, Plus, Trash2, Moon, Users } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import apiClient from "@/services/api-client";
 import { Badge, Button, Card, EmptyState, PageHeader } from "@/components/atoms";
 import { cn } from "@/utils/cn";
+import { AssignEmployeesDialog } from "./AssignEmployeesDialog";
 
 const DAYS = ["mon","tue","wed","thu","fri","sat","sun"];
 const DAY_LABELS: Record<string,string> = { mon:"M",tue:"T",wed:"W",thu:"T",fri:"F",sat:"S",sun:"S" };
@@ -13,6 +14,7 @@ const DAY_LABELS: Record<string,string> = { mon:"M",tue:"T",wed:"W",thu:"T",fri:
 export default function ShiftsPage() {
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
+  const [assigning, setAssigning] = useState<{ id: string; name: string } | null>(null);
   const [form, setForm] = useState({ name:"", code:"", start_time:"09:00", end_time:"18:00", color:"#3b82f6", late_grace_minutes:10, break_duration_minutes:60, work_days:["mon","tue","wed","thu","fri"], is_overnight:false });
 
   const { data, isLoading } = useQuery({ queryKey:["shifts"], queryFn: async () => { const {data} = await apiClient.get("/shifts"); return data; }});
@@ -23,7 +25,7 @@ export default function ShiftsPage() {
   const remove = useMutation({ mutationFn: (id:string) => apiClient.delete(`/shifts/${id}`), onSuccess: () => { toast.success("Deleted"); void qc.invalidateQueries({queryKey:["shifts"]}); }});
 
   const toggleDay = (day:string) => setForm(f => ({ ...f, work_days: f.work_days.includes(day) ? f.work_days.filter(d=>d!==day) : [...f.work_days,day] }));
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
   const shifts = data?.items ?? [];
 
   function calcHours(start: string, end: string, overnight: boolean) {
@@ -43,7 +45,7 @@ export default function ShiftsPage() {
           <div className="grid grid-cols-4 gap-4">
             <div className="col-span-2"><label className="block text-xs font-medium mb-1">Shift Name *</label><input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Morning Shift" className={inp}/></div>
             <div><label className="block text-xs font-medium mb-1">Code</label><input value={form.code} onChange={e=>setForm(f=>({...f,code:e.target.value.toUpperCase()}))} placeholder="MRN" className={inp}/></div>
-            <div><label className="block text-xs font-medium mb-1">Color</label><input type="color" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))} className="h-9 w-full rounded-md border border-[hsl(var(--border))] px-1"/></div>
+            <div><label className="block text-xs font-medium mb-1">Color</label><input type="color" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))} className="h-10 w-full rounded-md border border-[hsl(var(--border))] px-1"/></div>
             <div><label className="block text-xs font-medium mb-1">Start Time</label><input type="time" value={form.start_time} onChange={e=>setForm(f=>({...f,start_time:e.target.value}))} className={inp}/></div>
             <div><label className="block text-xs font-medium mb-1">End Time</label><input type="time" value={form.end_time} onChange={e=>setForm(f=>({...f,end_time:e.target.value}))} className={inp}/></div>
             <div><label className="block text-xs font-medium mb-1">Late Grace (min)</label><input type="number" value={form.late_grace_minutes} onChange={e=>setForm(f=>({...f,late_grace_minutes:parseInt(e.target.value)}))} className={inp}/></div>
@@ -98,8 +100,16 @@ export default function ShiftsPage() {
             <span>Grace: {s.late_grace_minutes}m</span>
             <span>Break: {s.break_duration_minutes}m</span>
           </div>
+          <div className="mt-4 flex items-center justify-between border-t border-[hsl(var(--border))] pt-3">
+            <span className="flex items-center gap-1.5 text-xs text-[hsl(var(--foreground-muted))]">
+              <Users size={13} />
+              {s.employee_count ?? 0} employee{(s.employee_count ?? 0) === 1 ? "" : "s"}
+            </span>
+            <Button variant="outline" size="sm" onClick={()=>setAssigning({id:s.id,name:s.name})}>Assign employees</Button>
+          </div>
         </div>
       ))}</div>}
+      {assigning && <AssignEmployeesDialog shift={assigning} onClose={()=>setAssigning(null)} />}
     </div>
   );
 }

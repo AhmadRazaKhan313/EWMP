@@ -40,6 +40,7 @@ const employeeSchema = z.object({
   department_id: z.string().optional(),
   designation_id: z.string().optional(),
   branch_id: z.string().optional(),
+  default_shift_id: z.string().optional(),
   work_location: z.string().optional(),
   is_remote: z.boolean().default(false),
 
@@ -94,7 +95,7 @@ function Input({ error, className, ...props }: React.InputHTMLAttributes<HTMLInp
       className={cn(
         "w-full rounded-md border px-3 py-2 text-sm outline-none transition-colors",
         "bg-[hsl(var(--background))] placeholder:text-[hsl(var(--foreground-muted))]",
-        "focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1",
+        "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
         error
           ? "border-[hsl(var(--destructive))]"
           : "border-[hsl(var(--border))] hover:border-[hsl(var(--border-strong))]",
@@ -111,7 +112,7 @@ function Select({ error, children, className, ...props }: React.SelectHTMLAttrib
       className={cn(
         "w-full rounded-md border px-3 py-2 text-sm outline-none transition-colors",
         "bg-[hsl(var(--background))]",
-        "focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1",
+        "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
         error
           ? "border-[hsl(var(--destructive))]"
           : "border-[hsl(var(--border))] hover:border-[hsl(var(--border-strong))]",
@@ -198,6 +199,13 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
     queryFn: async () => (await apiClient.get("/branches")).data,
     enabled: open,
   });
+  // The shift an employee works: it decides when they count as late/absent and
+  // which days are their weekly off on the Attendance page.
+  const { data: shifts } = useQuery({
+    queryKey: ["shifts"],
+    queryFn: async () => (await apiClient.get("/shifts")).data,
+    enabled: open,
+  });
   // Roles for the required create-time assignment. Every new employee must be
   // given exactly one role (see backend EmployeeCreateSchema.role_id) — a
   // role-less user has zero permissions and an unusable app.
@@ -210,6 +218,8 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
   const departmentOptions: { id: string; name: string }[] = departments?.items ?? departments ?? [];
   const designationOptions: { id: string; title?: string; name?: string }[] = designations?.items ?? designations ?? [];
   const branchOptions: { id: string; name: string }[] = branches?.items ?? branches ?? [];
+  const shiftOptions: { id: string; name: string; start_time: string; end_time: string; is_active?: boolean }[] =
+    shifts?.items ?? shifts ?? [];
   const roleOptions: { id: string; name: string }[] = roles?.items ?? roles ?? [];
 
   // Tracks the role the employee had when the Edit form was opened, so
@@ -244,6 +254,7 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           department_id: data.department_id || "",
           designation_id: data.designation_id || "",
           branch_id: data.branch_id || "",
+          default_shift_id: data.default_shift_id || "",
           work_location: data.work_location || "",
           is_remote: !!data.is_remote,
           current_salary: data.current_salary ? String(data.current_salary) : "",
@@ -273,6 +284,10 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
       return;
     }
     setIsLoading(true);
+    // Set the moment the server confirms the new employee. If anything fails
+    // after that, the employee EXISTS and the message must say so -- a generic
+    // "Something went wrong" there sends the admin off to create a duplicate.
+    let employeeCreated = false;
     try {
       const emergency_contact = values.emergency_name
         ? {
@@ -297,6 +312,7 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           department_id: values.department_id || null,
           designation_id: values.designation_id || null,
           branch_id: values.branch_id || null,
+          default_shift_id: values.default_shift_id || null,
           work_location: values.work_location || null,
           is_remote: values.is_remote,
           current_salary: values.current_salary ? parseFloat(values.current_salary) : null,
@@ -324,6 +340,7 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           department_id: values.department_id || null,
           designation_id: values.designation_id || null,
           branch_id: values.branch_id || null,
+          default_shift_id: values.default_shift_id || null,
           work_location: values.work_location || null,
           is_remote: values.is_remote,
           current_salary: values.current_salary ? parseFloat(values.current_salary) : null,
@@ -335,6 +352,7 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           blood_group: values.blood_group || null,
           emergency_contact,
         });
+        employeeCreated = true;
 
         if (res.data?.temporary_password) {
           const password: string = res.data.temporary_password;
@@ -430,8 +448,36 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
       handleClose();
       reset();
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? "Something went wrong";
-      toast.error(msg);
+      const e = err as {
+        code?: string;
+        response?: { data?: { message?: string } };
+      };
+      const serverMessage = e?.response?.data?.message;
+      if (employeeCreated) {
+        // The employee is saved (and the temporary password was already shown);
+        // only a follow-up step failed.
+        void qc.invalidateQueries({ queryKey: ["employees"] });
+        void qc.invalidateQueries({ queryKey: ["employee-stats"] });
+        toast.error(
+          serverMessage
+            ? `Employee was created, but a follow-up step failed: ${serverMessage}`
+            : "Employee was created, but a follow-up step failed. Check the Documents tab.",
+        );
+      } else if (serverMessage) {
+        toast.error(serverMessage);
+      } else if (!e?.response) {
+        // No reply at all (timeout, server down, network). A create may still
+        // have gone through on the server, and its temporary password is only
+        // ever shown in the reply -- so say that instead of a vague failure.
+        void qc.invalidateQueries({ queryKey: ["employees"] });
+        toast.error(
+          isEdit
+            ? "Couldn't reach the server. Please check your connection and try again."
+            : "The server didn't respond in time. The employee may already have been created — check the employee list before trying again.",
+        );
+      } else {
+        toast.error("Something went wrong");
+      }
     } finally {
       setIsLoading(false);
     }
@@ -486,10 +532,10 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={cn(
-                "px-4 py-3 text-sm font-medium border-b-2 transition-colors",
+                "mr-3 px-1 py-3 text-sm font-semibold border-b-2 -mb-px transition-colors",
                 activeTab === tab.id
-                  ? "border-[hsl(var(--foreground))] text-[hsl(var(--foreground))]"
-                  : "border-transparent text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]",
+                  ? "border-[hsl(var(--brand-600))] text-[hsl(var(--accent-foreground))]"
+                  : "border-transparent text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground-subtle))]",
               )}
             >
               {tab.label}
@@ -683,6 +729,25 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
                     <Label>Work Location</Label>
                     <Input placeholder="e.g. Karachi Office, Floor 3" {...register("work_location")} />
                   </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label>Shift</Label>
+                    <Select {...register("default_shift_id")}>
+                      <option value="">No shift (organisation work week)</option>
+                      {shiftOptions
+                        .filter((s) => s.is_active !== false)
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} ({s.start_time.slice(0, 5)}–{s.end_time.slice(0, 5)})
+                          </option>
+                        ))}
+                    </Select>
+                  </div>
+                  <p className="self-end pb-2 text-xs text-[hsl(var(--foreground-muted))]">
+                    Decides when this employee counts as late or absent, and which days are their weekly off.
+                  </p>
                 </div>
 
                 <div className="flex items-center gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
