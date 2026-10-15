@@ -2,7 +2,7 @@
  * Auth API service.
  */
 
-import apiClient, { clearTokens, setTokens, TOKEN_KEYS } from "./api-client";
+import apiClient, { clearTokens, getRefreshToken, setTokens, TOKEN_KEYS } from "./api-client";
 import type { AuthResponse, MeResponse, TokenResponse } from "@/types";
 
 export interface LoginPayload {
@@ -54,7 +54,9 @@ export const authService = {
 
   async logout(): Promise<void> {
     try {
-      await apiClient.post("/auth/logout");
+      // The server revokes the session this refresh token belongs to, so a
+      // copy of it can never be used again (audit H-6).
+      await apiClient.post("/auth/logout", { refresh_token: getRefreshToken() });
     } finally {
       clearTokens();
     }
@@ -84,12 +86,27 @@ export const authService = {
     await apiClient.post("/auth/verify-email", { token });
   },
 
+  /** Emails a fresh verification link to the signed-in user. */
+  async resendVerification(): Promise<{ message: string }> {
+    const { data } = await apiClient.post<{ message: string }>("/auth/resend-verification");
+    return data;
+  },
+
   async changePassword(payload: {
     current_password: string;
     new_password: string;
     confirm_password: string;
   }): Promise<void> {
-    await apiClient.post("/auth/change-password", payload);
+    const { data } = await apiClient.post<{ tokens?: TokenResponse }>(
+      "/auth/change-password",
+      payload,
+    );
+    // Changing the password signs every other session out and invalidates the
+    // tokens this one was using; the server hands back a fresh pair for this
+    // device. Without storing them the next request would bounce to login.
+    if (data?.tokens) {
+      setTokens(data.tokens.access_token, data.tokens.refresh_token);
+    }
   },
 
   async updateProfile(payload: {
