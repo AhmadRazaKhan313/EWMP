@@ -1,4 +1,6 @@
 /** @type {import('tailwindcss').Config} */
+const tokens = require("./tailwind.tokens.js");
+
 module.exports = {
   darkMode: ["class"],
   content: [
@@ -8,6 +10,7 @@ module.exports = {
   ],
   theme: {
     extend: {
+      ...tokens,
       fontFamily: {
         sans: ["var(--font-sans)", "ui-sans-serif", "system-ui"],
         heading: ["var(--font-heading)", "ui-sans-serif", "system-ui"],
