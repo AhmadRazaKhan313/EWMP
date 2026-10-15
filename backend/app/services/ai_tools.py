@@ -12,11 +12,13 @@ employee rows) — the assistant should never be able to dump a full PII
 table through a tool call.
 """
 
-from datetime import date, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.timezones import local_today, org_zone
 
 from app.models.attendance import AttendanceRecord, AttendanceStatus, LeaveRequest, LeaveRequestStatus
 from app.models.employee import Employee, EmploymentStatus
@@ -55,7 +57,7 @@ async def get_headcount_summary(db: AsyncSession, tenant_id: UUID) -> dict:
 async def get_attrition_summary(db: AsyncSession, tenant_id: UUID, days: int = 90) -> dict:
     """Offboarded employees in the trailing window — the closest thing to
     attrition we can compute without a dedicated termination-reason field."""
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = local_today(await org_zone(db, tenant_id)) - timedelta(days=days)
     terminated = (
         await db.execute(
             select(func.count()).where(
@@ -83,7 +85,7 @@ async def get_attrition_summary(db: AsyncSession, tenant_id: UUID, days: int = 9
 
 async def get_attendance_summary(db: AsyncSession, tenant_id: UUID, days: int = 30) -> dict:
     """Present/late/absent rates over the trailing window."""
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = local_today(await org_zone(db, tenant_id)) - timedelta(days=days)
     rows = (
         await db.execute(
             select(AttendanceRecord.status, func.count())
@@ -115,7 +117,7 @@ async def get_leave_summary(db: AsyncSession, tenant_id: UUID) -> dict:
             )
         )
     ).scalar_one()
-    today = date.today()
+    today = local_today(await org_zone(db, tenant_id))
     on_leave_today = (
         await db.execute(
             select(func.count()).where(
@@ -161,11 +163,13 @@ async def get_payroll_summary(db: AsyncSession, tenant_id: UUID) -> dict:
 # provider-specific tool payload from the same source of truth.
 TOOL_REGISTRY: dict[str, dict] = {
     "get_headcount_summary": {
+        "permission": "employees.view",
         "description": "Get total employee headcount, broken down by employment status and department.",
         "parameters": {"type": "object", "properties": {}},
         "fn": get_headcount_summary,
     },
     "get_attrition_summary": {
+        "permission": "employees.view",
         "description": "Get how many employees were offboarded recently and the approximate attrition rate.",
         "parameters": {
             "type": "object",
@@ -176,6 +180,7 @@ TOOL_REGISTRY: dict[str, dict] = {
         "fn": get_attrition_summary,
     },
     "get_attendance_summary": {
+        "permission": "attendance.view",
         "description": "Get present/late/absent attendance rates over a trailing window.",
         "parameters": {
             "type": "object",
@@ -186,11 +191,13 @@ TOOL_REGISTRY: dict[str, dict] = {
         "fn": get_attendance_summary,
     },
     "get_leave_summary": {
+        "permission": "leave.view",
         "description": "Get the count of pending leave requests and how many employees are on approved leave today.",
         "parameters": {"type": "object", "properties": {}},
         "fn": get_leave_summary,
     },
     "get_payroll_summary": {
+        "permission": "payroll.view",
         "description": "Get totals (gross, deductions, net, employee count) from the most recent payroll run.",
         "parameters": {"type": "object", "properties": {}},
         "fn": get_payroll_summary,
@@ -198,11 +205,58 @@ TOOL_REGISTRY: dict[str, dict] = {
 }
 
 
-async def execute_tool(name: str, arguments: dict, db: AsyncSession, tenant_id: UUID) -> dict:
-    """Dispatch a tool call by name. Returns a plain dict, JSON-serializable."""
+def tools_for_user(user) -> frozenset[str]:
+    """Names of the tools this user is allowed to use.
+
+    Each tool returns org-wide aggregates that would otherwise sit behind an
+    RBAC permission (e.g. payroll totals -> `payroll.view`). The assistant must
+    never be a side door around that, so a tool is offered to the model — and
+    executed — only if the caller holds the permission the same data needs
+    elsewhere in the API. Owners / platform admins pass via `has_permission`.
+    """
+    return frozenset(
+        name
+        for name, spec in TOOL_REGISTRY.items()
+        if user.has_permission(spec["permission"])
+    )
+
+
+_MAX_DAYS_WINDOW = 365
+
+
+def _sanitize_arguments(arguments: dict) -> dict:
+    """Model-supplied arguments are untrusted: only pass through what the tool
+    functions accept, with `days` coerced to a sane integer window."""
+    clean: dict = {}
+    if "days" in arguments:
+        try:
+            days = int(arguments["days"])
+        except (TypeError, ValueError):
+            days = None
+        if days is not None:
+            clean["days"] = max(1, min(days, _MAX_DAYS_WINDOW))
+    return clean
+
+
+async def execute_tool(
+    name: str,
+    arguments: dict,
+    db: AsyncSession,
+    tenant_id: UUID,
+    *,
+    allowed_tools: frozenset[str],
+) -> dict:
+    """Dispatch a tool call by name. Returns a plain dict, JSON-serializable.
+
+    `allowed_tools` is required (keyword-only) so no caller can forget the
+    permission check. Even if the model asks for a tool it was never offered
+    (hallucinated or prompt-injected), it is refused here.
+    """
     tool = TOOL_REGISTRY.get(name)
     if tool is None:
         return {"error": f"Unknown tool: {name}"}
+    if name not in allowed_tools:
+        return {"error": "You do not have permission to access this data."}
     fn = tool["fn"]
     # Every tool function takes (db, tenant_id, **rest)
-    return await fn(db, tenant_id, **{k: v for k, v in arguments.items() if k != "tenant_id"})
+    return await fn(db, tenant_id, **_sanitize_arguments(arguments or {}))

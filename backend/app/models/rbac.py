@@ -27,7 +27,7 @@ Permission codename format: <resource>.<action>
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, String, Table, Text, Column, JSON
+from sqlalchemy import Boolean, ForeignKey, Index, String, Table, Text, Column, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -120,6 +120,8 @@ class Role(UUIDMixin, TimestampMixin, Base):
     not reserved for a special role either.
     """
     __tablename__ = "roles"
+    # Role slugs are unique within an organisation (audit H-2; migration 1ff3dd1a844a).
+    __table_args__ = (Index("uq_roles_org_slug", "organization_id", "slug", unique=True),)
 
     # NULL for platform-level roles (Platform Super Admin)
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
