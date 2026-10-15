@@ -12,12 +12,17 @@ celery_app = Celery(
     "ewmp",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
+    # Every entry here is imported when the worker boots, and a missing
+    # module aborts the boot entirely (ModuleNotFoundError) — which is what
+    # "app.workers.tasks.payroll" and "app.workers.tasks.reports" used to do,
+    # silently disabling every task below. Only list modules that exist;
+    # tests/test_celery_worker_boot.py enforces this.
     include=[
         "app.workers.tasks.email",
-        "app.workers.tasks.payroll",
-        "app.workers.tasks.reports",
         "app.workers.tasks.notifications",
         "app.workers.tasks.device_health",
+        "app.workers.tasks.attendance",
+        "app.workers.tasks.auth_sessions",
     ],
 )
 
@@ -45,5 +50,23 @@ celery_app.conf.beat_schedule = {
     "mark-stale-devices-offline": {
         "task": "device_health.mark_stale_devices_offline",
         "schedule": settings.DEVICE_HEARTBEAT_INTERVAL_SECONDS * 3,
+    },
+    # The single auto-close policy for forgotten check-outs (audit M-7) —
+    # see app/services/attendance_sync.sweep_stale_attendance. It replaced
+    # the midnight auto-close. The times it records are fixed cutoff
+    # instants, so the interval only affects how soon a stale punch is seen.
+    "purge-old-screenshots": {
+        "task": "device_health.purge_old_screenshots",
+        "schedule": 86400,
+    },
+    "sweep-stale-attendance": {
+        "task": "attendance.sweep_stale_attendance",
+        "schedule": 900,
+    },
+    # Drops expired refresh-token rows (audit H-6) so auth_refresh_tokens
+    # doesn't grow without bound.
+    "purge-expired-refresh-tokens": {
+        "task": "auth.purge_expired_refresh_tokens",
+        "schedule": 86400,
     },
 }

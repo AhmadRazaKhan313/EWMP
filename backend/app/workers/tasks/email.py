@@ -6,6 +6,7 @@ are never blocked waiting for SMTP. Each task has retry logic
 with exponential backoff for transient SMTP failures.
 """
 
+import html as html_lib
 import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -41,7 +42,7 @@ def _send_smtp(to_email: str, subject: str, html_body: str) -> None:
 )
 def send_verification_email(self, to_email: str, token: str) -> None:
     """Send email verification link."""
-    verify_url = f"https://app.ewmp.io/verify-email?token={token}"
+    verify_url = f"{settings.FRONTEND_URL}/verify-email?token={token}"
     html = f"""
     <div style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #111827;">Verify your email address</h2>
@@ -78,10 +79,10 @@ def send_employee_invite_email(self, to_email: str, first_name: str, invite_toke
     picks their own via the same token-based flow as forgot-password,
     just with a longer validity window (see INVITE_TOKEN_VALID_FOR).
     """
-    set_password_url = f"https://app.ewmp.io/reset-password?token={invite_token}"
+    set_password_url = f"{settings.FRONTEND_URL}/reset-password?token={invite_token}"
     html = f"""
     <div style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto;">
-      <h2 style="color: #111827;">Welcome to EWMP, {first_name}!</h2>
+      <h2 style="color: #111827;">Welcome to EWMP, {html_lib.escape(first_name)}!</h2>
       <p style="color: #6B7280;">
         An account has been created for you. Click the button below to set
         your password and log in for the first time.
@@ -113,7 +114,7 @@ def send_employee_invite_email(self, to_email: str, first_name: str, invite_toke
 )
 def send_password_reset_email(self, to_email: str, token: str) -> None:
     """Send password reset link."""
-    reset_url = f"https://app.ewmp.io/reset-password?token={token}"
+    reset_url = f"{settings.FRONTEND_URL}/reset-password?token={token}"
     html = f"""
     <div style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #111827;">Reset your password</h2>
