@@ -8,6 +8,7 @@ there was no agent process anywhere that could pick it up. See
 `agent/ewmp_agent.py` for the companion script that calls these endpoints.
 """
 
+import hmac
 import platform
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -23,8 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError
 from app.core.security import (
+    agent_token_needs_rotation,
     create_agent_token,
     create_device_enrollment_token,
+    hash_agent_token,
     verify_agent_token,
     verify_device_enrollment_token,
 )
@@ -54,8 +57,31 @@ async def get_current_device(
     device = (
         await db.execute(select(Device).where(Device.id == device_id))
     ).scalar_one_or_none()
-    if device is None or not device.is_enrolled:
+    # A decommissioned device is soft-deleted AND un-enrolled. Checking
+    # is_deleted too means a soft-deleted row can never keep heartbeating
+    # "successfully" while being invisible in the admin fleet list -- the
+    # agent gets a 401 and re-registers as a brand-new device instead.
+    if device is None or not device.is_enrolled or device.is_deleted:
         raise HTTPException(status_code=401, detail="Device not enrolled")
+
+    # A valid signature is not enough: the token must be the one currently
+    # issued to this device. Without this check the stored hash did nothing --
+    # a token could never be revoked, and every re-enrollment left all earlier
+    # (10-year) tokens working (audit H-12).
+    presented = hash_agent_token(token)
+    if hmac.compare_digest(presented, device.agent_token_hash or ""):
+        pass
+    elif device.next_agent_token_hash and hmac.compare_digest(
+        presented, device.next_agent_token_hash
+    ):
+        # The agent adopted the replacement it was handed: it becomes the only
+        # valid token and the old one stops working.
+        device.agent_token_hash = presented
+        device.next_agent_token_hash = None
+        await db.flush()
+    else:
+        raise HTTPException(status_code=401, detail="Agent token has been replaced or revoked")
+    device._agent_token_payload = payload  # for the heartbeat's rotation check
     return device
 
 
@@ -192,6 +218,7 @@ async def enroll_device(
 
     agent_token = create_agent_token(str(device.id))
     device.agent_token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
+    device.next_agent_token_hash = None  # a (re-)enrollment replaces every earlier token
     await db.flush()
 
     return {"device_id": str(device.id), "agent_token": agent_token}
@@ -239,11 +266,23 @@ async def self_enroll_device(
     now = datetime.now(timezone.utc)
     existing = (
         await db.execute(
-            select(Device).where(
+            select(Device)
+            .where(
                 Device.tenant_id == tenant_id,
                 Device.assigned_employee_id == employee.id,
                 Device.hostname == body.hostname,
+                # Never match a decommissioned / soft-deleted row. Re-using
+                # one would re-enable its token but leave is_deleted=True,
+                # so the device would heartbeat fine yet never show up in
+                # the admin Devices list (list_devices hides deleted rows).
+                # It could also match several rows at once and crash with
+                # MultipleResultsFound. A re-registering machine must get a
+                # fresh row instead.
+                Device.is_deleted == False,  # noqa: E712
+                Device.status != DeviceStatus.DECOMMISSIONED,
             )
+            .order_by(Device.last_seen_at.desc().nullslast())
+            .limit(1)
         )
     ).scalar_one_or_none()
 
@@ -288,9 +327,19 @@ async def self_enroll_device(
 
     agent_token = create_agent_token(str(device.id))
     device.agent_token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
+    device.next_agent_token_hash = None  # a (re-)enrollment replaces every earlier token
     await db.flush()
 
     return {"device_id": str(device.id), "agent_token": agent_token}
+
+
+def auto_screenshot_due(last_captured: datetime | None, now: datetime, interval_seconds: int) -> bool:
+    """True when the device's newest screenshot is old enough (or missing) that
+    the heartbeat should ask for another. A 10s slack stops a capture that landed
+    a few seconds after its request from pushing the next one a whole beat late."""
+    if last_captured is None:
+        return True
+    return (now - last_captured).total_seconds() >= max(interval_seconds - 10, 0)
 
 
 @router.post("/heartbeat", summary="Agent heartbeat — metrics in, pending actions out")
@@ -348,7 +397,23 @@ async def heartbeat(
     await db.flush()
 
     from app.core.config import settings
-    return {
+
+    # Automatic screenshot: this device is connected (it is heartbeating right
+    # now), so ask for one if the newest is older than the configured interval.
+    # An admin's on-demand request already in `actions` counts, so the device
+    # never gets two at once. A small slack keeps the 60s heartbeat from
+    # skipping a beat when the previous capture landed a few seconds late.
+    if settings.DEVICE_AUTO_SCREENSHOT_ENABLED and not any(a.get("action") == "screenshot" for a in actions):
+        last_captured = (
+            await db.execute(
+                select(func.max(DeviceScreenshot.captured_at)).where(
+                    DeviceScreenshot.device_id == device.id, DeviceScreenshot.tenant_id == device.tenant_id
+                )
+            )
+        ).scalar_one_or_none()
+        if auto_screenshot_due(last_captured, now, settings.DEVICE_AUTO_SCREENSHOT_INTERVAL_SECONDS):
+            actions.append({"action": "screenshot", "source": "auto"})
+    reply = {
         "actions": actions,
         "health_score": score,
         # Sent on every heartbeat so the agent always has the current
@@ -357,6 +422,18 @@ async def heartbeat(
         # full activity/browsing logging.
         "activity_watchlist": settings.DEVICE_ACTIVITY_WATCHLIST,
     }
+
+    # Token rotation (audit H-12). When the agent's token is due for
+    # replacement, hand it a new one. The old token keeps working until the new
+    # one is first presented (see get_current_device), so an agent that does not
+    # store the new token is simply offered another next time, never locked out.
+    token_payload = getattr(device, "_agent_token_payload", None)
+    if token_payload is not None and agent_token_needs_rotation(token_payload):
+        new_token = create_agent_token(str(device.id))
+        locked_device.next_agent_token_hash = hash_agent_token(new_token)
+        await db.flush()
+        reply["agent_token"] = new_token
+    return reply
 
 
 @router.get("", summary="List all enrolled devices")
@@ -903,10 +980,12 @@ async def message_device(
 
 # ── Screen monitoring ────────────────────────────────────────────────────────
 #
-# On-demand only — an admin explicitly requests a capture, the agent takes
-# ONE screenshot on its next check-in (within ~heartbeat interval) and
-# uploads it, and the request stays in the audit trail (requested_by_id +
-# captured_at). There is no continuous recording/live-streaming mode.
+# Two ways a capture happens: an admin requests one (the agent takes ONE
+# screenshot on its next check-in and the request stays in the audit trail via
+# requested_by_id), or the heartbeat asks for one automatically about once a
+# minute while the device is connected (requested_by_id is NULL = automatic;
+# see settings.DEVICE_AUTO_SCREENSHOT_*). Still still images only — there is no
+# live-streaming mode. The desktop consent screen tells employees about both.
 @router.post(
     "/{device_id}/screenshot/request",
     summary="Request a one-off screenshot from the device",
@@ -930,15 +1009,33 @@ class ScreenshotUploadMeta(BaseModel):
     requested_by: str | None = None
 
 
+MAX_SCREENSHOT_BYTES = 15 * 1024 * 1024
+
+# What a screenshot may be, decided by looking at the bytes -- never by the
+# client-supplied Content-Type / mime_type / filename (audit H-12). The agent
+# only ever sends PNG; JPEG and WebP are allowed so other agents/platforms work.
+_IMAGE_TYPES: dict[str, str] = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+
+
+def _sniff_image_type(content: bytes) -> str | None:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 @router.post(
     "/screenshots/upload",
     summary="[Agent] Upload a captured screenshot",
 )
 async def upload_screenshot(
     file: UploadFile = File(...),
-    mime_type: str = Form("image/png"),
-    width: int | None = Form(None),
-    height: int | None = Form(None),
+    mime_type: str = Form("image/png"),  # accepted for compatibility, never trusted
+    width: int | None = Form(None, ge=1, le=20000),
+    height: int | None = Form(None, ge=1, le=20000),
     requested_by: str | None = Form(None),
     device: Device = Depends(get_current_device),
     db: AsyncSession = Depends(get_db),
@@ -946,26 +1043,56 @@ async def upload_screenshot(
     from app.core.storage import get_storage
     from app.core.exceptions import BadRequestError
 
-    content = await file.read()
+    # Read at most limit+1 bytes so an oversized body is refused without being
+    # held in memory in full.
+    content = await file.read(MAX_SCREENSHOT_BYTES + 1)
     if not content:
         raise BadRequestError("Empty screenshot upload")
-    if len(content) > 15 * 1024 * 1024:
+    if len(content) > MAX_SCREENSHOT_BYTES:
         raise BadRequestError("Screenshot exceeds the 15 MB upload limit")
 
+    # The stored type, the file extension and the type it is later served with
+    # all come from the actual bytes. Trusting the client's mime_type let an
+    # agent-token holder store text/html and have it served back to an admin's
+    # browser as a page (stored XSS).
+    detected = _sniff_image_type(content)
+    if detected is None:
+        raise BadRequestError("Screenshot must be a PNG, JPEG or WebP image")
+
+    # requested_by only attributes the capture to the admin who asked for it. It
+    # is client-supplied, so accept it only if it is a real user of THIS
+    # device's tenant; anything else (malformed, unknown, another tenant's user)
+    # is dropped instead of crashing or forging the audit trail.
+    requested_by_id: UUID | None = None
+    if requested_by:
+        try:
+            candidate = UUID(requested_by)
+        except ValueError:
+            candidate = None
+        if candidate is not None:
+            found = (
+                await db.execute(
+                    select(User.id).where(
+                        User.id == candidate, User.organization_id == device.tenant_id
+                    )
+                )
+            ).scalar_one_or_none()
+            requested_by_id = found
+
     storage = get_storage()
-    key = f"devices/{device.tenant_id}/{device.id}/screenshots/{uuid4().hex}.png"
+    key = f"devices/{device.tenant_id}/{device.id}/screenshots/{uuid4().hex}.{_IMAGE_TYPES[detected]}"
     await storage.save(key, content)
 
     screenshot = DeviceScreenshot(
         tenant_id=device.tenant_id,
         device_id=device.id,
         storage_key=key,
-        mime_type=mime_type,
+        mime_type=detected,
         file_size_bytes=len(content),
         width=width,
         height=height,
         captured_at=datetime.now(timezone.utc),
-        requested_by_id=UUID(requested_by) if requested_by else None,
+        requested_by_id=requested_by_id,
     )
     db.add(screenshot)
     await db.flush()
@@ -1040,7 +1167,25 @@ async def get_screenshot_image(
     from app.core.storage import get_storage
     storage = get_storage()
     content = await storage.read(screenshot.storage_key)
-    return Response(content=content, media_type=screenshot.mime_type)
+
+    # Only ever serve something that is verifiably an image, as that image
+    # type. Rows written before upload validation existed may carry any
+    # client-chosen mime_type (e.g. text/html), so re-check the bytes here and
+    # hand anything else back as an inert download.
+    served = _sniff_image_type(content)
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        # Even if a browser did render it, nothing in it may run.
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Cache-Control": "private, no-store",
+    }
+    if served is None:
+        headers["Content-Disposition"] = f'attachment; filename="screenshot-{screenshot.id}.bin"'
+        return Response(content=content, media_type="application/octet-stream", headers=headers)
+    headers["Content-Disposition"] = (
+        f'inline; filename="screenshot-{screenshot.id}.{_IMAGE_TYPES[served]}"'
+    )
+    return Response(content=content, media_type=served, headers=headers)
 
 
 # ── Activity Alerts (flagged-match only — see DeviceAlert docstring) ────────
@@ -1376,6 +1521,8 @@ async def decommission_device(
         raise NotFoundError("Device not found")
 
     device.is_enrolled = False
+    device.agent_token_hash = ""
+    device.next_agent_token_hash = None
     device.status = DeviceStatus.DECOMMISSIONED
     device.assigned_employee_id = None
     device.soft_delete()

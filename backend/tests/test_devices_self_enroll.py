@@ -168,3 +168,25 @@ class TestSelfEnrollDevice:
         assert len(db.added) == 0  # updated in place, never re-added
         assert existing.os_version == "6.5"
         assert existing.status == DeviceStatus.ONLINE
+
+
+    def test_lookup_ignores_decommissioned_and_soft_deleted_devices(self):
+        """Regression: re-registering a decommissioned machine must create a
+        NEW visible row. The existing-device lookup must exclude soft-deleted
+        and decommissioned rows, otherwise the old hidden row is revived and
+        never appears in the admin Devices list."""
+        captured = []
+
+        class _CapturingDB(_FakeDB):
+            async def execute(self, stmt):
+                captured.append(stmt)
+                return await super().execute(stmt)
+
+        db = _CapturingDB([_FakeResult(scalar=None)])
+        _run(self_enroll_device(body=_body(), current_user=_user(), tenant_id=TENANT, db=db))
+
+        sql = str(captured[0].compile(compile_kwargs={"literal_binds": False})).lower()
+        assert "is_deleted" in sql
+        assert "status !=" in sql or "status <>" in sql
+        assert len(db.added) == 1
+        assert db.added[0].is_deleted in (False, None)

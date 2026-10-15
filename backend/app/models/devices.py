@@ -13,9 +13,9 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    Boolean, Date, DateTime, ForeignKey,
+    Boolean, Date, DateTime, ForeignKey, Index,
     Integer, Numeric, String, Text, JSON,
-    Enum as SAEnum, Float,
+    Enum as SAEnum, Float, text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -51,11 +51,20 @@ class AssetStatus(str, enum.Enum):
 
 class Device(TenantModel):
     __tablename__ = "devices"
+    # Serial numbers are unique per organisation among live devices (audit
+    # H-3; migration c4e95883fb29). A decommissioned (soft-deleted) device
+    # doesn't block the same hardware from being enrolled again.
+    __table_args__ = (
+        Index(
+            "uq_devices_tenant_serial_number_active", "tenant_id", "serial_number",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
     # ── Identity ──────────────────────────────────────────────────
     hostname: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     asset_tag: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # ── Agent ─────────────────────────────────────────────────────
@@ -67,6 +76,15 @@ class Device(TenantModel):
     agent_token_hash: Mapped[str] = mapped_column(
         String(255), nullable=False,
         comment="SHA-256 hash of the issued agent JWT",
+    )
+    next_agent_token_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True,
+        comment=(
+            "Hash of a rotated agent token the server has handed out but the "
+            "agent has not used yet. The old token stays valid until the new "
+            "one is first presented, so an agent that never adopts it is not "
+            "locked out."
+        ),
     )
 
     # ── OS & Hardware ─────────────────────────────────────────────
@@ -164,16 +182,14 @@ class DeviceMetric(TenantModel):
 
 class DeviceScreenshot(TenantModel):
     """
-    A single on-demand screen capture from a device.
+    A single point-in-time screen capture from a device.
 
-    Deliberately on-demand only — the agent captures a screenshot when an
-    admin explicitly requests one (queued via pending_actions, same
-    mechanism as lock/restart), not on a continuous timer. Continuous
-    screen recording is a much bigger privacy/consent/legal surface than
-    this project needs to take on; point-in-time captures triggered by a
-    specific admin action, with that admin's identity recorded, keeps
-    this auditable and defensible as an IT-support tool rather than
-    surveillance software.
+    Taken either when an admin requests one (requested_by_id is set, so the
+    request is auditable) or automatically on a timer while the device is
+    connected (requested_by_id is NULL; see settings.DEVICE_AUTO_SCREENSHOT_*).
+    Both travel through the heartbeat's pending actions. Captures are still
+    images, not a recording or live stream, and are purged after
+    settings.DEVICE_SCREENSHOT_RETENTION_DAYS.
     """
     __tablename__ = "device_screenshots"
 
@@ -300,14 +316,27 @@ class DeviceAllowedApp(TenantModel):
 
 class Asset(TenantModel):
     __tablename__ = "assets"
+    # Asset tags and serial numbers are unique per organisation among live
+    # assets (audit H-3; migration c4e95883fb29) — two companies can both own
+    # "LAPTOP-001", and a deleted asset's tag can be reused.
+    __table_args__ = (
+        Index(
+            "uq_assets_tenant_asset_tag_active", "tenant_id", "asset_tag",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+        Index(
+            "uq_assets_tenant_serial_number_active", "tenant_id", "serial_number",
+            unique=True, postgresql_where=text("is_deleted = false"),
+        ),
+    )
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
-    asset_tag: Mapped[str] = mapped_column(String(50), nullable=False, unique=True, index=True)
+    asset_tag: Mapped[str] = mapped_column(String(50), nullable=False)
     category: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     sub_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     brand: Mapped[str | None] = mapped_column(String(100), nullable=True)
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    serial_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     status: Mapped[AssetStatus] = mapped_column(

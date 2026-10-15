@@ -18,12 +18,12 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import update
+from sqlalchemy import delete, select, update
 
 from app.workers.celery_app import celery_app
 from app.core.config import settings
-from app.core.database import AsyncSessionLocal
-from app.models.devices import Device, DeviceStatus
+from app.core.database import worker_db_session
+from app.models.devices import Device, DeviceScreenshot, DeviceStatus
 
 logger = logging.getLogger("ewmp.device_health")
 
@@ -31,7 +31,7 @@ logger = logging.getLogger("ewmp.device_health")
 async def _mark_stale_devices_offline() -> int:
     cutoff = datetime.now(UTC) - timedelta(seconds=settings.DEVICE_OFFLINE_AFTER_SECONDS)
 
-    async with AsyncSessionLocal() as db:
+    async with worker_db_session() as db:
         result = await db.execute(
             update(Device)
             .where(
@@ -53,4 +53,42 @@ def mark_stale_devices_offline() -> int:
     count = asyncio.run(_mark_stale_devices_offline())
     if count:
         logger.info("Marked %d stale device(s) offline", count)
+    return count
+
+
+async def _purge_old_screenshots(batch_size: int = 500) -> int:
+    """Delete screenshots older than the retention window — files first, then
+    rows. Works in batches so a large backlog never holds one huge transaction."""
+    from app.core.storage import get_storage
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.DEVICE_SCREENSHOT_RETENTION_DAYS)
+    storage = get_storage()
+    total = 0
+    while True:
+        async with worker_db_session() as db:
+            rows = (
+                await db.execute(
+                    select(DeviceScreenshot.id, DeviceScreenshot.storage_key)
+                    .where(DeviceScreenshot.captured_at < cutoff)
+                    .limit(batch_size)
+                )
+            ).all()
+            if not rows:
+                return total
+            for _id, key in rows:
+                try:
+                    await storage.delete(key)
+                except Exception:  # file already gone / storage hiccup — the row still goes
+                    logger.warning("Could not delete screenshot file %s", key)
+            await db.execute(delete(DeviceScreenshot).where(DeviceScreenshot.id.in_([r[0] for r in rows])))
+            await db.commit()
+            total += len(rows)
+
+
+@celery_app.task(name="device_health.purge_old_screenshots")
+def purge_old_screenshots() -> int:
+    """Daily: drop screenshots past DEVICE_SCREENSHOT_RETENTION_DAYS."""
+    count = asyncio.run(_purge_old_screenshots())
+    if count:
+        logger.info("Purged %d old screenshot(s)", count)
     return count
