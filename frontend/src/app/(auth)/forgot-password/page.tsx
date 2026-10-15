@@ -76,7 +76,7 @@ export default function ForgotPasswordPage() {
                     className={cn(
                       "w-full rounded-md border bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none",
                       "placeholder:text-[hsl(var(--foreground-muted))]",
-                      "focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1",
+                      "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
                       errors.email
                         ? "border-[hsl(var(--destructive))]"
                         : "border-[hsl(var(--border))] hover:border-[hsl(var(--border-strong))]",
