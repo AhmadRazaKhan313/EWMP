@@ -1,0 +1,191 @@
+/*
+ * Floating check-in / break widget ("glass" card).
+ *
+ * ONE stylesheet shared by the website (components/organisms/FloatingTimerWidget)
+ * and the desktop app (screens/WidgetScreen) so the two look identical. Keep
+ * the copies in frontend/src/styles and desktop-app/src/renderer/src/styles in
+ * sync (a test checks this). The card is deliberately dark in light AND dark
+ * mode -- it is a floating overlay, not part of the page.
+ *
+ * Everything is namespaced `fw-`; nothing here touches global elements.
+ */
+
+/* Self-contained sizing: do not rely on the host page's CSS reset. */
+.fw-card, .fw-card *, .fw-card *::before, .fw-card *::after,
+.fw-pill, .fw-pill *, .fw-pill *::before, .fw-pill *::after { box-sizing: border-box; }
+
+.fw-card {
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  padding: 22px;
+  border-radius: 20px;
+  color: #f3f7fb;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, .10), rgba(255, 255, 255, .02) 55%),
+    rgba(15, 21, 34, .86);
+  border: 1px solid rgba(255, 255, 255, .13);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+          backdrop-filter: blur(24px) saturate(150%);
+  box-shadow:
+    0 28px 56px -16px rgba(0, 0, 0, .6),
+    0 8px 20px -8px rgba(0, 0, 0, .45),
+    inset 0 1px 0 rgba(255, 255, 255, .16);
+  user-select: none;
+  -webkit-user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Header: status (left) + window controls (right) ───────────────────── */
+.fw-top { display: flex; align-items: center; justify-content: space-between; min-height: 20px; }
+
+.fw-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  color: #2dd4bf;
+  transition: color .3s;
+}
+
+.fw-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent), 0 0 14px 2px currentColor;
+  animation: fw-pulse 2.2s ease-in-out infinite;
+}
+
+.fw-card[data-state="break"]   .fw-status { color: #fb923c; }
+.fw-card[data-state="offline"] .fw-status { color: #8b93a1; }
+.fw-card[data-state="offline"] .fw-dot    { animation: none; box-shadow: none; }
+
+@keyframes fw-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent), 0 0 10px 1px currentColor; }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 8%, transparent),  0 0 18px 4px currentColor; }
+}
+
+.fw-controls { display: flex; gap: 2px; }
+.fw-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border: 0; border-radius: 6px;
+  background: transparent; color: rgba(226, 232, 240, .62); cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.fw-icon-btn:hover { background: rgba(255, 255, 255, .1); color: #fff; }
+.fw-icon-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+
+/* ── Work timer ────────────────────────────────────────────────────────── */
+.fw-clock { text-align: center; }
+
+.fw-time {
+  font-size: clamp(42px, 13vw, 54px);
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: .02em;
+  color: #eafffb;
+  text-shadow: 0 0 18px rgba(45, 212, 191, .55), 0 0 42px rgba(45, 212, 191, .28);
+  transition: color .3s, text-shadow .3s;
+}
+.fw-card[data-state="break"]   .fw-time { color: rgba(234, 255, 251, .55); text-shadow: none; }
+.fw-card[data-state="offline"] .fw-time { color: rgba(226, 232, 240, .5);  text-shadow: none; }
+
+.fw-label { margin-top: 8px; font-size: 13px; font-weight: 500; letter-spacing: .08em; color: rgba(226, 232, 240, .62); }
+
+/* ── Break line ────────────────────────────────────────────────────────── */
+.fw-progress { --p: 0%; height: 4px; border-radius: 999px; background: rgba(255, 255, 255, .09); overflow: hidden; }
+.fw-fill {
+  width: 100%; height: 100%; border-radius: inherit;
+  background: linear-gradient(90deg, #2dd4bf 0%, #f97316 100%);
+  box-shadow: 0 0 10px rgba(45, 212, 191, .45);
+  clip-path: inset(0 calc(100% - var(--p)) 0 0 round 999px);
+  transition: clip-path .6s ease;
+}
+.fw-break-text { margin-top: 10px; text-align: center; font-size: 13px; font-weight: 500; color: rgba(226, 232, 240, .62); }
+.fw-break-text b { font-weight: 600; color: #f3f7fb; transition: color .3s; }
+.fw-card[data-state="break"] .fw-break-text b { color: #fb923c; }
+
+/* ── Buttons ───────────────────────────────────────────────────────────── */
+.fw-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.fw-actions--single { grid-template-columns: 1fr; }
+
+.fw-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-width: 0; height: 52px; padding: 0 12px;
+  border: 0; border-radius: 999px;
+  font: inherit; font-size: 12.5px; font-weight: 800; letter-spacing: .09em; white-space: nowrap;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: transform .15s ease, box-shadow .25s ease, filter .2s, opacity .2s;
+}
+.fw-btn svg { flex: none; width: 22px; height: 22px; }
+.fw-btn:hover:not(:disabled)  { transform: translateY(-2px); filter: brightness(1.06); }
+.fw-btn:active:not(:disabled) { transform: translateY(0) scale(.97); }
+.fw-btn:focus-visible { outline: 2px solid #fff; outline-offset: 3px; }
+.fw-btn:disabled { opacity: .38; cursor: not-allowed; box-shadow: none !important; }
+
+.fw-btn--teal   { color: #04211e; background: linear-gradient(180deg, #5eead4 0%, #14b8a6 100%);
+                  box-shadow: 0 10px 24px -8px rgba(20, 184, 166, .75), inset 0 1px 0 rgba(255, 255, 255, .45); }
+.fw-btn--red    { color: #fff;          background: linear-gradient(180deg, #f87171 0%, #dc2626 100%);
+                  box-shadow: 0 10px 24px -8px rgba(239, 68, 68, .75),  inset 0 1px 0 rgba(255, 255, 255, .35); }
+.fw-btn--orange { color: #2b1204;       background: linear-gradient(180deg, #fdba74 0%, #f97316 100%);
+                  box-shadow: 0 10px 24px -8px rgba(249, 115, 22, .75), inset 0 1px 0 rgba(255, 255, 255, .45); }
+
+/* ── Messages ──────────────────────────────────────────────────────────── */
+.fw-note  { text-align: center; font-size: 12px; line-height: 1.45; color: rgba(226, 232, 240, .62); }
+.fw-error { text-align: center; font-size: 11.5px; line-height: 1.4; color: #fca5a5; }
+
+/* ── Collapsed pill (website only) ─────────────────────────────────────── */
+.fw-pill {
+  display: inline-flex; align-items: center; gap: 12px;
+  height: 48px; padding: 0 16px 0 18px;
+  border-radius: 999px; border: 1px solid rgba(255, 255, 255, .13);
+  color: #fff; font: inherit; cursor: pointer;
+  background: linear-gradient(150deg, rgba(255, 255, 255, .10), rgba(255, 255, 255, .02) 55%), rgba(15, 21, 34, .9);
+  -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: 0 18px 36px -12px rgba(0, 0, 0, .6), inset 0 1px 0 rgba(255, 255, 255, .16);
+  font-variant-numeric: tabular-nums;
+}
+.fw-pill:focus-visible { outline: 2px solid #2dd4bf; outline-offset: 3px; }
+.fw-pill .fw-status { font-size: 11px; }
+.fw-pill[data-state="working"] .fw-status { color: #2dd4bf; }
+.fw-pill[data-state="break"]   .fw-status { color: #fb923c; }
+.fw-pill[data-state="offline"] .fw-status { color: #8b93a1; }
+.fw-pill[data-state="offline"] .fw-dot    { animation: none; box-shadow: none; }
+.fw-pill__time { font-size: 17px; font-weight: 500; letter-spacing: .02em; }
+
+@media (max-width: 360px) {
+  .fw-actions { gap: 8px; }
+  .fw-btn { font-size: 11px; letter-spacing: .05em; gap: 6px; padding: 0 8px; }
+  .fw-btn svg { width: 20px; height: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fw-card *, .fw-pill * { animation: none !important; transition: none !important; }
+  .fw-card, .fw-pill { transition: none !important; }
+}
+
+/* ── Desktop window helpers ────────────────────────────────────────────── */
+/* The widget is a frameless window: the card is the drag handle and
+   everything clickable inside it opts out. The root class makes the page
+   behind the card transparent (the window itself is transparent). */
+.fw-drag   { -webkit-app-region: drag; }
+.fw-nodrag, .fw-card .fw-btn, .fw-card .fw-icon-btn { -webkit-app-region: no-drag; }
+html.fw-window-root, html.fw-window-root body, html.fw-window-root #root { background: transparent !important; }
+
+/* In the desktop app the card sits in a transparent window: there is nothing
+   behind it to blur (the app also runs without GPU acceleration), so it is a
+   solid dark card there instead of frosted glass. */
+html.fw-window-root .fw-card {
+  -webkit-backdrop-filter: none;
+          backdrop-filter: none;
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, .10), rgba(255, 255, 255, .02) 55%),
+    rgb(15, 21, 34);
+}

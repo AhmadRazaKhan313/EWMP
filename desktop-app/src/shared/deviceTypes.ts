@@ -30,3 +30,50 @@ export interface HardwareInfo {
   mac_address: string | null;
   agent_version: string | null;
 }
+
+/** Result of main/screenshotCapture.ts's captureScreenshot() — lives here
+ * (not in main/) for the same cross-process-import reason as
+ * TrayIconStatus above: preload needs the type without importing from
+ * main/. */
+export interface CapturedScreenshot {
+  /** Base64-encoded PNG — IPC can't pass a raw Buffer as cleanly as a
+   * string across the context-isolation bridge, and this is small enough
+   * (one image, on-demand only — see backend's DeviceScreenshot docstring)
+   * that base64's ~33% overhead doesn't matter. */
+  base64Png: string;
+  width: number;
+  height: number;
+}
+
+/** One entry from the backend heartbeat response's `actions` array (see
+ * POST /devices/heartbeat's docstring — "metrics in, pending actions
+ * out"). Only `action` is guaranteed; the rest are per-action-type
+ * fields the backend attaches when queuing (see devices.py's
+ * _queue_device_action call sites). */
+export interface PendingDeviceAction {
+  action: "lock" | "restart" | "shutdown" | "message" | "screenshot" | string;
+  requested_by?: string;
+  text?: string;
+}
+
+/** One matched entry from main/activityTracker.ts's drainPendingAlerts()
+ * — mirrors the backend's AlertUploadItem shape exactly (see
+ * POST /devices/alerts/upload) so deviceService.uploadAlerts() can pass
+ * these straight through with no reshaping. */
+export interface WatchlistAlert {
+  alert_type: "flagged_app_usage" | "flagged_browsing";
+  matched_term: string;
+  detail: string;
+  occurred_at: string;
+}
+
+/** POST /devices/heartbeat response shape — see backend's return
+ * statement in devices.py's heartbeat(). */
+export interface HeartbeatResponse {
+  actions: PendingDeviceAction[];
+  health_score: number | null;
+  activity_watchlist: string[];
+  /** Present when the server is replacing this device's agent token (audit
+   * H-12). Must be stored: the current one is retired once it is used. */
+  agent_token?: string;
+}

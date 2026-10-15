@@ -21,6 +21,7 @@ export interface UserInToken {
   organization_slug: string | null;
   roles: string[];
   permissions: string[];
+  must_change_password: boolean;
 }
 
 /** POST /auth/login response — NOTE the nested `tokens` key. This is the
@@ -38,6 +39,24 @@ export interface MeResponse {
   last_name: string;
   full_name: string;
   avatar_url: string | null;
+  phone: string | null;
+  bio: string | null;
   is_platform_admin: boolean;
   is_2fa_enabled: boolean;
+  organization_id: string | null;
+  roles: string[];
+  permissions: string[];
+  has_full_access: boolean;
+  has_employee_profile: boolean;
+  must_change_password: boolean;
+  preferences: Record<string, unknown>;
+}
+
+/** PATCH /auth/me body — only these four are editable here; email, roles,
+ * and org membership go through an admin-facing flow instead. */
+export interface ProfileUpdatePayload {
+  first_name?: string;
+  last_name?: string;
+  phone?: string;
+  bio?: string;
 }
