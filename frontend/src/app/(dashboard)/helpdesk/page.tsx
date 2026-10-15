@@ -48,7 +48,7 @@ export default function HelpdeskPage() {
     onSuccess: () => { toast.success("Status updated"); void qc.invalidateQueries({ queryKey: ["tickets"] }); },
   });
 
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
   const tickets = data?.items ?? [];
   const open = tickets.filter((t:any) => t.status === "open").length;
   const inProg = tickets.filter((t:any) => t.status === "in_progress").length;

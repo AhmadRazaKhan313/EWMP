@@ -7,7 +7,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import apiClient from "@/services/api-client";
 import { DataTable } from "@/components/molecules/DataTable";
-import { Badge, Button, EmptyState, PageHeader } from "@/components/atoms";
+import { AvatarLabelGroup, Badge, Button, EmptyState, PageHeader, Tabs } from "@/components/atoms";
 import { ApplyLeaveModal } from "./ApplyLeaveModal";
 
 interface LeaveRequest {
@@ -69,9 +69,8 @@ export default function LeavePage() {
     {
       header: "Employee",
       accessorKey: "employee_name",
-      cell: ({ getValue }) => (
-        <span className="font-medium">{getValue<string>()}</span>
-      ),
+      cell: ({ getValue }) => <AvatarLabelGroup name={getValue<string>()} size="sm" />,
+      size: 220,
     },
     {
       header: "Leave Type",
@@ -128,17 +127,17 @@ export default function LeavePage() {
           <div className="flex items-center gap-1.5">
             <button
               onClick={(e) => { e.stopPropagation(); approveMutation.mutate(req.id); }}
-              className="flex h-7 w-7 items-center justify-center rounded-md bg-[hsl(var(--success-subtle))] text-[hsl(var(--success))] hover:opacity-80"
+              className="flex h-7 w-7 items-center justify-center rounded-md bg-[hsl(var(--status-active-bg))] text-[hsl(var(--status-active-fg))] transition-colors hover:opacity-80"
               title="Approve"
             >
-              <Check size={13} />
+              <Check size={14} />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); rejectMutation.mutate(req.id); }}
-              className="flex h-7 w-7 items-center justify-center rounded-md bg-[hsl(var(--status-error-bg))] text-[hsl(var(--destructive))] hover:opacity-80"
+              className="flex h-7 w-7 items-center justify-center rounded-md bg-[hsl(var(--status-error-bg))] text-[hsl(var(--status-error-fg))] transition-colors hover:opacity-80"
               title="Reject"
             >
-              <X size={13} />
+              <X size={14} />
             </button>
           </div>
         );
@@ -156,36 +155,26 @@ export default function LeavePage() {
         title="Leave Management"
         description="Review and manage employee leave requests."
         action={
-          <div className="flex items-center gap-2">
-            {pending > 0 && (
-              <span className="rounded-full bg-[hsl(var(--warning-subtle))] px-2.5 py-1 text-xs font-semibold text-[hsl(var(--warning))]">
-                {pending} pending
-              </span>
-            )}
+          <>
             <Button variant="outline" icon={<Filter size={14} />}>Filter</Button>
             <Button icon={<Plus size={14} />} onClick={() => setApplyOpen(true)}>Apply for Leave</Button>
-          </div>
+          </>
         }
       />
 
       <ApplyLeaveModal open={applyOpen} onClose={() => setApplyOpen(false)} />
 
-      {/* Status filter tabs */}
-      <div className="flex items-center gap-1 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background-subtle))] p-1 w-fit">
-        {["", "pending", "approved", "rejected"].map((s) => (
-          <button
-            key={s}
-            onClick={() => setStatusFilter(s)}
-            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-              statusFilter === s
-                ? "bg-[hsl(var(--background))] shadow-[var(--shadow-xs)] text-[hsl(var(--foreground))]"
-                : "text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]"
-            }`}
-          >
-            {s === "" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
-          </button>
-        ))}
-      </div>
+      {/* Status filter — the shared segmented-tab pattern, per the Figma design */}
+      <Tabs
+        tabs={[
+          { value: "", label: "All" },
+          { value: "pending", label: "Pending", count: pending > 0 ? pending : undefined },
+          { value: "approved", label: "Approved" },
+          { value: "rejected", label: "Rejected" },
+        ]}
+        value={statusFilter}
+        onChange={setStatusFilter}
+      />
 
       <DataTable
         data={requests}

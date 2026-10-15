@@ -1,5 +1,6 @@
 "use client";
 
+import { apiErrorText } from "@/utils/api-error";
 import { forwardRef, useEffect } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -28,7 +29,7 @@ const Input = forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputEl
       className={cn(
         "w-full rounded-md border px-3 py-2 text-sm outline-none transition-colors",
         "bg-[hsl(var(--background))] placeholder:text-[hsl(var(--foreground-muted))]",
-        "focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1",
+        "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
         error ? "border-[hsl(var(--destructive))]" : "border-[hsl(var(--border))] hover:border-[hsl(var(--border-strong))]",
         className,
       )}
@@ -45,7 +46,7 @@ const Select = forwardRef<HTMLSelectElement, React.SelectHTMLAttributes<HTMLSele
       className={cn(
         "w-full rounded-md border px-3 py-2 text-sm outline-none transition-colors",
         "bg-[hsl(var(--background))]",
-        "focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1",
+        "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
         error ? "border-[hsl(var(--destructive))]" : "border-[hsl(var(--border))] hover:border-[hsl(var(--border-strong))]",
         className,
       )}
@@ -157,8 +158,7 @@ export function ApplyLeaveModal({ open, onClose }: ApplyLeaveModalProps) {
       onClose();
     },
     onError: (err: unknown) => {
-      const msg = (err as { response?: { data?: { message?: string; detail?: string } } })?.response?.data;
-      toast.error(msg?.message || msg?.detail || "Couldn't submit leave request");
+      toast.error(apiErrorText(err, "Couldn't submit leave request"));
     },
   });
 
@@ -290,7 +290,7 @@ export function ApplyLeaveModal({ open, onClose }: ApplyLeaveModalProps) {
               {...register("reason")}
               rows={3}
               placeholder="Optional — add context for your manager"
-              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none transition-colors placeholder:text-[hsl(var(--foreground-muted))] hover:border-[hsl(var(--border-strong))] focus:ring-2 focus:ring-[hsl(var(--ring))] focus:ring-offset-1"
+              className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none transition-colors placeholder:text-[hsl(var(--foreground-muted))] hover:border-[hsl(var(--border-strong))] focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]"
             />
           </div>
         </form>

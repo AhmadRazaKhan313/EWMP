@@ -32,7 +32,7 @@ export default function PerformancePage() {
 
   const goals = goalsData?.items ?? [];
   const reviews = reviewsData?.items ?? [];
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
 
   const goalCols: ColumnDef<any,unknown>[] = [
     { header:"Goal", accessorKey:"title", cell:({row})=><div><p className="font-medium text-sm">{row.original.title}</p>{row.original.category&&<p className="text-xs text-[hsl(var(--foreground-muted))]">{row.original.category}</p>}</div>, size:280 },

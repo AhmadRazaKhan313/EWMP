@@ -15,7 +15,7 @@ export default function LeaveTypesPage() {
   const create = useMutation({ mutationFn: (b:any) => apiClient.post("/leave/types", b), onSuccess: () => { toast.success("Leave type created"); void qc.invalidateQueries({queryKey:["leave-types"]}); setShowForm(false); }});
   const update = useMutation({ mutationFn: ({id,b}:{id:string;b:object}) => apiClient.patch(`/leave/types/${id}`, b), onSuccess: () => { toast.success("Updated"); void qc.invalidateQueries({queryKey:["leave-types"]}); }});
 
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
   const types = data?.items ?? [];
 
   const BoolIcon = ({ val }: { val: boolean }) => val ? <Check size={13} className="text-[hsl(var(--success))]"/> : <X size={13} className="text-[hsl(var(--foreground-muted))]"/>;
@@ -31,7 +31,7 @@ export default function LeaveTypesPage() {
             <div><label className="block text-xs font-medium mb-1">Code</label><input value={form.code} onChange={e=>setForm(f=>({...f,code:e.target.value.toUpperCase()}))} placeholder="AL" className={inp}/></div>
             <div><label className="block text-xs font-medium mb-1">Days/Year</label><input type="number" value={form.days_per_year} onChange={e=>setForm(f=>({...f,days_per_year:e.target.value}))} className={inp}/></div>
           </div>
-          <div><label className="block text-xs font-medium mb-1">Color</label><input type="color" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))} className="h-9 w-24 rounded-md border border-[hsl(var(--border))] px-1"/></div>
+          <div><label className="block text-xs font-medium mb-1">Color</label><input type="color" value={form.color} onChange={e=>setForm(f=>({...f,color:e.target.value}))} className="h-10 w-24 rounded-md border border-[hsl(var(--border))] px-1"/></div>
           <div className="grid grid-cols-2 gap-3">
             {[
               {key:"is_paid",label:"Paid Leave"},

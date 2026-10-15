@@ -13,7 +13,7 @@ export default function BranchesPage() {
   const { data, isLoading } = useQuery({ queryKey:["branches"], queryFn: async () => { const {data} = await apiClient.get("/branches"); return data; }});
   const create = useMutation({ mutationFn: (b:object) => apiClient.post("/branches", b), onSuccess: () => { toast.success("Branch created"); void qc.invalidateQueries({queryKey:["branches"]}); setShowForm(false); setForm({name:"",code:"",city:"",country:"",phone:"",timezone:"UTC",is_headquarters:false}); }});
   const remove = useMutation({ mutationFn: (id:string) => apiClient.delete(`/branches/${id}`), onSuccess: () => { toast.success("Deleted"); void qc.invalidateQueries({queryKey:["branches"]}); }});
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
   const branches = data?.items ?? [];
   return (
     <div className="space-y-6">

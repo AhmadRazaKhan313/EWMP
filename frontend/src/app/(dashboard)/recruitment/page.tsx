@@ -40,7 +40,7 @@ export default function RecruitmentPage() {
 
   const jobs = jobsData?.items ?? [];
   const applicants = appsData?.items ?? [];
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
 
   const jobCols: ColumnDef<any,unknown>[] = [
     { header:"Job Title", accessorKey:"title", cell:({row})=><div><p className="font-medium text-sm">{row.original.title}</p><p className="text-xs text-[hsl(var(--foreground-muted))] capitalize">{row.original.employment_type?.replace("_"," ")}</p></div> },

@@ -26,7 +26,7 @@ export default function DesignationsPage() {
   const update = useMutation({ mutationFn: ({id,b}:{id:string;b:object}) => apiClient.patch(`/designations/${id}`, b), onSuccess: () => { toast.success("Updated"); void qc.invalidateQueries({queryKey:["designations"]}); setEditId(null); }});
   const remove = useMutation({ mutationFn: (id:string) => apiClient.delete(`/designations/${id}`), onSuccess: () => { toast.success("Deleted"); void qc.invalidateQueries({queryKey:["designations"]}); }});
 
-  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[hsl(var(--ring))]";
+  const inp = "w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]";
   const designations = data?.items ?? [];
 
   const grouped = LEVELS.map(l => ({ ...l, items: designations.filter((d:any) => d.level === l.value) })).filter(g => g.items.length > 0);
