@@ -14,7 +14,7 @@ describe("ConsentNotice", () => {
   it("explains monitoring scope and shows the acknowledge button", () => {
     render(<ConsentNotice />);
     expect(screen.getByText(/device monitoring notice/i)).toBeInTheDocument();
-    expect(screen.getByText(/when an administrator explicitly requests one/i)).toBeInTheDocument();
+    expect(screen.getByText(/about once a minute while this app is running/i)).toBeInTheDocument();
     expect(screen.getByTestId("consent-acknowledge-button")).toHaveTextContent("I Understand, Continue");
   });
 

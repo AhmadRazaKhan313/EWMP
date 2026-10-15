@@ -1,5 +1,6 @@
-import { Loader2, Monitor } from "lucide-react";
+import { Loader2, ShieldCheck, Camera, MessageSquare, Activity } from "lucide-react";
 import { useDeviceStore } from "../store/deviceStore";
+import AuthShell from "../components/AuthShell";
 
 /**
  * Shown exactly once per install, before an employee's device is ever
@@ -22,39 +23,44 @@ export default function ConsentNotice(): JSX.Element {
   const isEnrolling = status === "enrolling";
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-[hsl(var(--background))] p-6">
-      <div className="flex max-w-md flex-col gap-4 rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-6 text-[hsl(var(--foreground))] shadow-lg">
-        <div className="flex items-center gap-2">
-          <Monitor size={20} className="text-[hsl(var(--primary))]" />
-          <h1 className="font-heading text-base font-semibold">Device Monitoring Notice</h1>
+    <AuthShell step={2} wide>
+      <div className="flex flex-col gap-8">
+        <div>
+          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-lg bg-[hsl(var(--accent))] text-[hsl(var(--primary))]">
+            <ShieldCheck size={20} />
+          </div>
+          <h1 className="font-heading text-[26px] font-semibold text-[hsl(var(--foreground))]">
+            Device monitoring notice
+          </h1>
+          <p className="mt-1.5 text-sm text-[hsl(var(--foreground-muted))]">
+            This computer is managed by your organization's IT department using the EWMP desktop app. While active,
+            it may:
+          </p>
         </div>
 
-        <p className="text-sm text-[hsl(var(--foreground-muted))]">
-          This computer is managed by your organization's IT department using the EWMP desktop app. While active, it
-          may:
-        </p>
-
-        <ul className="list-disc space-y-1 pl-5 text-sm text-[hsl(var(--foreground-muted))]">
-          <li>Report hardware/performance metrics (CPU, RAM, disk, battery)</li>
-          <li>Allow IT to remotely lock, restart, or send you a message</li>
-          <li>
-            Capture a screenshot <strong>only</strong> when an administrator explicitly requests one — never
-            continuously or without a specific request
-          </li>
-          <li>
-            Flag when this device visits a small watch-list of known non-work websites or has certain applications in
-            focus, for workplace-policy purposes — only flagged matches are reported, <strong>not</strong> a full
-            browsing or activity history
-          </li>
+        <ul className="flex flex-col gap-4">
+          <ConsentItem icon={<Activity size={16} />} title="Report hardware/performance metrics">
+            CPU, RAM, disk, and battery — used to keep company devices healthy.
+          </ConsentItem>
+          <ConsentItem icon={<MessageSquare size={16} />} title="Allow IT to remotely lock, restart, or message you">
+            Standard fleet-management actions, always visible when they happen.
+          </ConsentItem>
+          <ConsentItem icon={<Camera size={16} />} title="Capture screenshots of your screen">
+          About once a minute while this app is running and connected, and whenever an administrator requests one. Still images only — never a recording or live stream.
+          </ConsentItem>
+          <ConsentItem icon={<ShieldCheck size={16} />} title="Flag visits to a small non-work watch-list">
+            Only flagged matches are reported for workplace-policy purposes — not a full browsing or activity
+            history.
+          </ConsentItem>
         </ul>
 
-        <p className="text-xs text-[hsl(var(--foreground-muted))]">
+        <p className="text-xs leading-relaxed text-[hsl(var(--foreground-muted))]">
           A tray icon is shown at all times while this app is running. Contact your IT/HR department for your
           organization's full device-monitoring policy.
         </p>
 
         {error && (
-          <p role="alert" className="text-xs text-[hsl(var(--destructive))]">
+          <p role="alert" className="text-sm text-[hsl(var(--destructive))]">
             {error} — you can keep using the app; device setup will retry.
           </p>
         )}
@@ -63,12 +69,34 @@ export default function ConsentNotice(): JSX.Element {
           onClick={() => void acknowledgeAndEnroll()}
           disabled={isEnrolling}
           data-testid="consent-acknowledge-button"
-          className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[hsl(var(--primary))] py-3 text-sm font-semibold text-[hsl(var(--primary-foreground))] shadow-md transition-colors hover:bg-[hsl(var(--primary-hover))] disabled:opacity-60"
+          className="flex items-center justify-center gap-2 rounded-lg bg-[hsl(var(--primary))] py-2.5 text-sm font-semibold text-[hsl(var(--primary-foreground))] shadow-sm transition-colors hover:bg-[hsl(var(--primary-hover))] disabled:opacity-60"
         >
           {isEnrolling && <Loader2 className="animate-spin" size={16} />}
           I Understand, Continue
         </button>
       </div>
-    </div>
+    </AuthShell>
+  );
+}
+
+function ConsentItem({
+  icon,
+  title,
+  children,
+}: {
+  icon: JSX.Element;
+  title: string;
+  children: string;
+}): JSX.Element {
+  return (
+    <li className="flex gap-3">
+      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[hsl(var(--muted))] text-[hsl(var(--foreground-subtle))]">
+        {icon}
+      </div>
+      <div>
+        <p className="text-sm font-medium text-[hsl(var(--foreground))]">{title}</p>
+        <p className="mt-0.5 text-sm leading-relaxed text-[hsl(var(--foreground-muted))]">{children}</p>
+      </div>
+    </li>
   );
 }
