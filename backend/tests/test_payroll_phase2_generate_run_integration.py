@@ -310,6 +310,12 @@ class TestUnpaidLeaveFixInGenerateRun:
 
         unpaid_type = LeaveType(tenant_id=TENANT, name="Unpaid Leave", code="UNPAID", is_paid=False)
         db_session.add(unpaid_type)
+        # This test measures the month in WORKING days (22 in June 2026), so
+        # it says so: since audit C-7 generation honours
+        # PayrollSettings.proration_method (default CALENDAR_DAYS) instead of
+        # always using Mon–Fri.
+        from app.models.payroll import PayrollSettings, WorkingDaysMethod
+        db_session.add(PayrollSettings(tenant_id=TENANT, proration_method=WorkingDaysMethod.WORKING_DAYS))
         await db_session.flush()
 
         # June 2026: 22 weekdays. 5 unpaid leave days (all weekdays).

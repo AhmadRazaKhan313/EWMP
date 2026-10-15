@@ -25,7 +25,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def _base_columns():
     return [
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True),
+        sa.Column("tenant_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
@@ -36,19 +36,27 @@ def _base_columns():
 def upgrade() -> None:
     bind = op.get_bind()
 
+    # Uppercase labels (matching each Python enum member's .name) —
+    # SQLAlchemy's Enum(python_enum_class) binds by .name by default, not
+    # .value. See ebe9ce81bf8e_fix_work_session_status_enum_casing.py for
+    # the same bug hit and fixed elsewhere in this codebase.
     enums = {
-        "loan_status_enum": ("active", "suspended", "closed", "cancelled"),
-        "advance_status_enum": ("active", "closed", "cancelled"),
-        "bonus_type_enum": ("performance", "annual", "festival", "joining", "retention", "spot", "attendance", "custom"),
-        "bonus_status_enum": ("pending", "approved", "paid", "cancelled"),
-        "commission_status_enum": ("pending", "approved", "paid", "cancelled"),
-        "arrear_status_enum": ("pending", "approved", "paid", "cancelled"),
-        "reimbursement_category_enum": ("travel", "medical", "fuel", "internet", "meals", "accommodation", "other"),
-        "reimbursement_status_enum": ("submitted", "reviewed", "approved", "included_in_payroll", "paid", "rejected"),
+        "loan_status_enum": ("ACTIVE", "SUSPENDED", "CLOSED", "CANCELLED"),
+        "advance_status_enum": ("ACTIVE", "CLOSED", "CANCELLED"),
+        "bonus_type_enum": ("PERFORMANCE", "ANNUAL", "FESTIVAL", "JOINING", "RETENTION", "SPOT", "ATTENDANCE", "CUSTOM"),
+        "bonus_status_enum": ("PENDING", "APPROVED", "PAID", "CANCELLED"),
+        "commission_status_enum": ("PENDING", "APPROVED", "PAID", "CANCELLED"),
+        "arrear_status_enum": ("PENDING", "APPROVED", "PAID", "CANCELLED"),
+        "reimbursement_category_enum": ("TRAVEL", "MEDICAL", "FUEL", "INTERNET", "MEALS", "ACCOMMODATION", "OTHER"),
+        "reimbursement_status_enum": ("SUBMITTED", "REVIEWED", "APPROVED", "INCLUDED_IN_PAYROLL", "PAID", "REJECTED"),
     }
     pg_enums = {}
     for name, values in enums.items():
-        pg_enums[name] = postgresql.ENUM(*values, name=name)
+        # create_type=False: see phase1/phase2 migrations for why this is
+        # required — without it, using this same enum object as a column
+        # type in op.create_table below re-issues CREATE TYPE a second
+        # time and fails with "already exists".
+        pg_enums[name] = postgresql.ENUM(*values, name=name, create_type=False)
         pg_enums[name].create(bind, checkfirst=True)
 
     # ── payroll_loans ───────────────────────────────────────────────────
@@ -62,7 +70,7 @@ def upgrade() -> None:
         sa.Column("remaining_balance", sa.Numeric(12, 2), nullable=False),
         sa.Column("start_date", sa.Date, nullable=False),
         sa.Column("deduction_priority", sa.Integer, nullable=False, server_default="100"),
-        sa.Column("status", pg_enums["loan_status_enum"], nullable=False, server_default="active"),
+        sa.Column("status", pg_enums["loan_status_enum"], nullable=False, server_default="ACTIVE"),
         sa.Column("reason", sa.Text, nullable=True),
         sa.Column("approved_by_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
@@ -79,7 +87,7 @@ def upgrade() -> None:
         sa.Column("remaining_balance", sa.Numeric(12, 2), nullable=False),
         sa.Column("recovery_start_date", sa.Date, nullable=False),
         sa.Column("deduction_priority", sa.Integer, nullable=False, server_default="110"),
-        sa.Column("status", pg_enums["advance_status_enum"], nullable=False, server_default="active"),
+        sa.Column("status", pg_enums["advance_status_enum"], nullable=False, server_default="ACTIVE"),
         sa.Column("reason", sa.Text, nullable=True),
         sa.Column("approved_by_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
@@ -97,7 +105,7 @@ def upgrade() -> None:
         sa.Column("is_recurring", sa.Boolean, nullable=False, server_default="false"),
         sa.Column("target_period_start", sa.Date, nullable=False),
         sa.Column("target_period_end", sa.Date, nullable=False),
-        sa.Column("status", pg_enums["bonus_status_enum"], nullable=False, server_default="pending"),
+        sa.Column("status", pg_enums["bonus_status_enum"], nullable=False, server_default="PENDING"),
         sa.Column("approved_by_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("notes", sa.Text, nullable=True),
     )
@@ -130,7 +138,7 @@ def upgrade() -> None:
         sa.Column("target_period_end", sa.Date, nullable=False),
         sa.Column("sales_amount", sa.Numeric(14, 2), nullable=False),
         sa.Column("computed_amount", sa.Numeric(12, 2), nullable=False),
-        sa.Column("status", pg_enums["commission_status_enum"], nullable=False, server_default="pending"),
+        sa.Column("status", pg_enums["commission_status_enum"], nullable=False, server_default="PENDING"),
         sa.Column("approved_by_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
     op.create_index("ix_payroll_commissions_tenant_id", "payroll_commissions", ["tenant_id"])
@@ -148,7 +156,7 @@ def upgrade() -> None:
         sa.Column("amount", sa.Numeric(12, 2), nullable=False),
         sa.Column("is_taxable", sa.Boolean, nullable=False, server_default="true"),
         sa.Column("calculation_details", sa.JSON, nullable=False, server_default="{}"),
-        sa.Column("status", pg_enums["arrear_status_enum"], nullable=False, server_default="pending"),
+        sa.Column("status", pg_enums["arrear_status_enum"], nullable=False, server_default="PENDING"),
         sa.Column("approved_by_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
     op.create_index("ix_payroll_arrears_tenant_id", "payroll_arrears", ["tenant_id"])
@@ -163,7 +171,7 @@ def upgrade() -> None:
         sa.Column("description", sa.Text, nullable=True),
         sa.Column("receipt_url", sa.String(500), nullable=True),
         sa.Column("is_taxable", sa.Boolean, nullable=False, server_default="false"),
-        sa.Column("status", pg_enums["reimbursement_status_enum"], nullable=False, server_default="submitted"),
+        sa.Column("status", pg_enums["reimbursement_status_enum"], nullable=False, server_default="SUBMITTED"),
         sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.Column("reviewed_by_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("approved_by_id", postgresql.UUID(as_uuid=True), nullable=True),

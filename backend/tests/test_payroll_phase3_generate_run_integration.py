@@ -18,6 +18,13 @@ PERIOD_START = date(2026, 6, 1)
 PERIOD_END = date(2026, 6, 30)
 
 
+
+async def _finalize_effects(db_session, run):
+    """What finalizing the run does to loans/bonuses/…: apply its settlement
+    ledger. (Since audit C-6 generation no longer changes them directly.)"""
+    from app.services.payroll_settlements import apply_run
+    await apply_run(db_session, run)
+
 @pytest_asyncio.fixture
 async def db_session():
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -105,6 +112,9 @@ class TestLoanRepayment:
 
         run = await _make_run(db_session)
         await generate_payroll_run(run.id, _user(), TENANT, db_session)
+        # Generation only RECORDS what it uses (audit C-6) — the loan is untouched
+        assert loan.remaining_balance == Decimal("12000")
+        await _finalize_effects(db_session, run)
 
         payslip = (await db_session.execute(select(Payslip).where(Payslip.payroll_run_id == run.id))).scalar_one()
         assert payslip.net_salary == Decimal("99000.00")  # 100000 - 1000 installment
@@ -130,6 +140,9 @@ class TestLoanRepayment:
 
         run = await _make_run(db_session)
         await generate_payroll_run(run.id, _user(), TENANT, db_session)
+        # Generation only RECORDS what it uses (audit C-6) — the loan is untouched until finalize
+        assert loan.status == LoanStatus.ACTIVE
+        await _finalize_effects(db_session, run)
 
         payslip = (await db_session.execute(select(Payslip).where(Payslip.payroll_run_id == run.id))).scalar_one()
         assert payslip.net_salary == Decimal("99700.00")  # only 300 deducted, never overpaid
@@ -200,6 +213,9 @@ class TestBonus:
 
         run = await _make_run(db_session)
         await generate_payroll_run(run.id, _user(), TENANT, db_session)
+        # Generation only RECORDS what it uses (audit C-6) — the bonus is untouched
+        assert bonus.status == BonusStatus.APPROVED
+        await _finalize_effects(db_session, run)
 
         payslip = (await db_session.execute(select(Payslip).where(Payslip.payroll_run_id == run.id))).scalar_one()
         assert payslip.gross_salary == Decimal("110000.00")
@@ -270,6 +286,9 @@ class TestArrear:
 
         run = await _make_run(db_session)
         await generate_payroll_run(run.id, _user(), TENANT, db_session)
+        # Generation only RECORDS what it uses (audit C-6) — the arrear is untouched
+        assert arrear.status == ArrearStatus.APPROVED
+        await _finalize_effects(db_session, run)
 
         payslip = (await db_session.execute(select(Payslip).where(Payslip.payroll_run_id == run.id))).scalar_one()
         lines = (await db_session.execute(select(PayslipLine).where(PayslipLine.payslip_id == payslip.id))).scalars().all()
@@ -298,6 +317,9 @@ class TestCommission:
 
         run = await _make_run(db_session)
         await generate_payroll_run(run.id, _user(), TENANT, db_session)
+        # Generation only RECORDS what it uses (audit C-6) — the commission is untouched
+        assert commission.status == CommissionStatus.APPROVED
+        await _finalize_effects(db_session, run)
 
         payslip = (await db_session.execute(select(Payslip).where(Payslip.payroll_run_id == run.id))).scalar_one()
         assert payslip.gross_salary == Decimal("130000.00")
@@ -322,6 +344,9 @@ class TestReimbursement:
 
         run = await _make_run(db_session)
         await generate_payroll_run(run.id, _user(), TENANT, db_session)
+        # Generation only RECORDS what it uses (audit C-6) — the reimbursement is untouched
+        assert reimbursement.status == ReimbursementStatus.APPROVED
+        await _finalize_effects(db_session, run)
 
         payslip = (await db_session.execute(select(Payslip).where(Payslip.payroll_run_id == run.id))).scalar_one()
         assert payslip.gross_salary == Decimal("102500.00")

@@ -9,6 +9,7 @@ Covers the full payroll engine:
   - Payslip PDF export (generated on demand with reportlab)
 """
 
+import csv
 import io
 from datetime import date, datetime, UTC
 from decimal import Decimal
@@ -16,24 +17,39 @@ from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError, ValidationError
-from app.models.attendance import AttendanceRecord, AttendanceStatus, LeaveRequest, LeaveRequestStatus, LeaveType
+from app.core.exceptions import (
+    ConflictError,
+    EmployeeProfileNotLinkedError,
+    NotFoundError,
+    PermissionDeniedError,
+    ValidationError,
+)
+from app.models.attendance import AttendanceRecord
 from app.models.employee import Employee, EmploymentStatus
+from app.models.organization import Organization
+from app.models.rbac import Permission
 from app.models.payroll import (
+    AccountMappingPurpose,
+    ApprovalDecision,
     ComponentCalculation,
     ComponentRuleOverrideType,
     ComponentType,
     ContributionCalculationBase,
     EmployeeSalary,
+    PayrollAccountMapping,
     PayrollAdvance,
     AdvanceStatus,
+    PayrollApproval,
+    SettlementSource,
+    PayrollApprovalLevel,
     PayrollArrear,
     ArrearStatus,
+    PayrollAuditLog,
     PayrollBonus,
     BonusType,
     BonusStatus,
@@ -46,12 +62,17 @@ from app.models.payroll import (
     PayrollFrequency,
     PayrollLoan,
     LoanStatus,
+    PaymentBatch,
+    PaymentBatchItem,
+    PaymentBatchStatus,
+    PaymentItemStatus,
     PayrollReimbursement,
     ReimbursementCategory,
     ReimbursementStatus,
     PayrollRun,
     PayrollRunStatus,
     PayrollSettings,
+    PayrollSnapshot,
     PayrollTaxBracket,
     PayrollTaxRule,
     Payslip,
@@ -63,6 +84,14 @@ from app.models.payroll import (
     TaxCalculationBase,
     WorkingDaysMethod,
 )
+from app.services.payroll_accounting import (
+    DEFAULT_ACCOUNT_CODES,
+    JournalLine,
+    PayslipLineData,
+    generate_journal_entries,
+    total_credits,
+    total_debits,
+)
 from app.services.payroll_commission import CommissionTierData, calculate_tiered_commission
 from app.services.payroll_contribution import ContributionRuleData, calculate_contribution
 from app.services.payroll_formula import (
@@ -72,12 +101,53 @@ from app.services.payroll_formula import (
     topological_sort_formulas,
     validate_formula,
 )
+from app.services.payroll_calendar import compute_payable_days, load_day_inputs
+from app.services.payroll_settlements import apply_run, is_reserved, record_settlement, reserved_amount, undo_run
 from app.services.payroll_tax import TaxBracketData, calculate_progressive_tax, monthly_from_annual
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
 from app.repositories.employee import EmployeeRepository
 
 router = APIRouter(prefix="/payroll", tags=["Payroll"])
+
+
+def _decimal_json_safe(value):
+    """JSON can't serialize Decimal directly — snapshot_data and audit-log
+    previous/new_value blobs need plain str/number-safe values."""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _decimal_json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_decimal_json_safe(v) for v in value]
+    return value
+
+
+async def _write_audit_log(
+    db: AsyncSession,
+    tenant_id: UUID,
+    user_id: UUID,
+    action: str,
+    entity_type: str,
+    entity_id: UUID,
+    *,
+    previous_value: dict | None = None,
+    new_value: dict | None = None,
+    reason: str | None = None,
+) -> None:
+    """
+    Append-only — never call this to update an existing row. Failures here
+    should never take down the actual payroll operation (an audit log
+    write failing is not a reason to fail the payroll action it's
+    recording), so callers wrap this in try/except at the call site where
+    that matters, matching the pattern used for other best-effort
+    side-effects elsewhere in this module (e.g. email queuing).
+    """
+    db.add(PayrollAuditLog(
+        tenant_id=tenant_id, user_id=user_id, action=action, entity_type=entity_type, entity_id=entity_id,
+        previous_value=_decimal_json_safe(previous_value), new_value=_decimal_json_safe(new_value), reason=reason,
+    ))
+    await db.flush()
 
 
 
@@ -108,6 +178,36 @@ class AssignSalaryRequest(BaseModel):
     basic_salary: Decimal
     effective_from: date
     component_overrides: dict[str, float] = {}
+
+
+async def _assert_period_is_free(
+    db: AsyncSession, tenant_id: UUID, start: date, end: date, exclude_run_id: UUID | None = None
+) -> None:
+    """One live payroll run per stretch of time (audit C-6). Two runs over the
+    same days paid the salary twice and took loan installments twice. A
+    per-organisation lock makes two simultaneous creates take turns."""
+    if end < start:
+        raise ValidationError("period_end can't be before period_start")
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": f"payroll-runs:{tenant_id}"}
+    )
+    clash = (
+        await db.execute(
+            select(PayrollRun.name, PayrollRun.period_start, PayrollRun.period_end).where(
+                PayrollRun.tenant_id == tenant_id,
+                PayrollRun.is_deleted == False,  # noqa: E712
+                PayrollRun.status != PayrollRunStatus.CANCELLED,
+                PayrollRun.period_start <= end,
+                PayrollRun.period_end >= start,
+                *([PayrollRun.id != exclude_run_id] if exclude_run_id else []),
+            ).limit(1)
+        )
+    ).first()
+    if clash:
+        raise ConflictError(
+            f"'{clash.name}' already covers {clash.period_start} – {clash.period_end}. "
+            "Reverse it first if this run should replace it."
+        )
 
 
 class CreatePayrollRunRequest(BaseModel):
@@ -853,12 +953,63 @@ async def approve_commission(
 
 # ── Reimbursements ────────────────────────────────────────────────────────────
 class ReimbursementCreate(BaseModel):
-    employee_id: UUID
+    # Omit it (or send your own employee id) to claim for yourself. Filing for
+    # anyone else is an admin action — see _resolve_claim_employee.
+    employee_id: UUID | None = None
     category: ReimbursementCategory
-    amount: Decimal
-    description: str | None = None
-    receipt_url: str | None = None
+    # Matches the Numeric(12, 2) column, so an oversized or over-precise
+    # amount is a 422 here instead of a database error (500).
+    amount: Decimal = Field(max_digits=12, decimal_places=2)
+    description: str | None = Field(None, max_length=2000)
+    receipt_url: str | None = Field(None, max_length=500)
     is_taxable: bool = False
+
+    @field_validator("receipt_url")
+    @classmethod
+    def _receipt_url_must_be_http(cls, value: str | None) -> str | None:
+        """Only plain web links. A `javascript:` / `data:` URL stored here
+        becomes script execution the moment any screen renders it as a link."""
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        if not value.lower().startswith(("https://", "http://")):
+            raise ValueError("receipt_url must be an http(s) link")
+        return value
+
+
+async def _resolve_claim_employee(
+    db: AsyncSession, current_user: User, tenant_id: UUID, requested_id: UUID | None
+) -> Employee:
+    """Whose claim is this? (audit finding H-16)
+
+    Submitting used to accept any employee_id from any logged-in user, with no
+    tenant check — so anyone could file money claims in a colleague's name
+    (or reference another organisation's employee), and once approved they
+    flowed straight into net pay.
+
+      * No employee_id, or the caller's own → the caller's own Employee
+        record (self-service; needs a linked employee profile).
+      * Anyone else → requires `payroll.manage_structure` (the permission that
+        already gates every other on-behalf payroll record: loans, advances,
+        bonuses, arrears) and the employee must exist in THIS organisation.
+    """
+    repo = EmployeeRepository(db, tenant_id)
+    own = await repo.get_by_user_id(current_user.id)
+
+    if requested_id is None or (own is not None and requested_id == own.id):
+        if own is None:
+            raise EmployeeProfileNotLinkedError()
+        return own
+
+    if not current_user.has_permission("payroll.manage_structure"):
+        raise PermissionDeniedError(
+            "Filing a reimbursement for another employee requires the "
+            "'payroll.manage_structure' permission."
+        )
+    target = await repo.get(requested_id)
+    if target is None:
+        raise NotFoundError("Employee not found in this organization")
+    return target
 
 
 def _serialize_reimbursement(r: PayrollReimbursement) -> dict:
@@ -888,6 +1039,35 @@ async def list_reimbursements(
     return {"items": [_serialize_reimbursement(r) for r in items], "total": len(items)}
 
 
+@router.get("/reimbursements/me", summary="List my own reimbursement claims")
+async def list_my_reimbursements(
+    status_filter: ReimbursementStatus | None = Query(None, alias="status"),
+    current_user: User = Depends(get_current_user),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Self-service counterpart to GET /reimbursements (which needs
+    payroll.view and shows everyone's claims). Without it an employee could
+    submit a claim but never see whether it was approved or rejected.
+    Same pattern as /payslips/me: scoped to the caller's own Employee."""
+    own = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
+    if own is None:
+        raise EmployeeProfileNotLinkedError()
+    filters = [
+        PayrollReimbursement.tenant_id == tenant_id,
+        PayrollReimbursement.employee_id == own.id,
+        PayrollReimbursement.is_deleted == False,  # noqa: E712
+    ]
+    if status_filter:
+        filters.append(PayrollReimbursement.status == status_filter)
+    items = (
+        await db.execute(
+            select(PayrollReimbursement).where(*filters).order_by(PayrollReimbursement.submitted_at.desc())
+        )
+    ).scalars().all()
+    return {"items": [_serialize_reimbursement(r) for r in items], "total": len(items)}
+
+
 @router.post("/reimbursements", status_code=status.HTTP_201_CREATED, summary="Submit a reimbursement claim")
 async def submit_reimbursement(
     body: ReimbursementCreate,
@@ -897,8 +1077,9 @@ async def submit_reimbursement(
 ) -> dict:
     if body.amount <= 0:
         raise ValidationError("amount must be positive")
+    employee = await _resolve_claim_employee(db, current_user, tenant_id, body.employee_id)
     reimbursement = PayrollReimbursement(
-        tenant_id=tenant_id, employee_id=body.employee_id, category=body.category, amount=body.amount,
+        tenant_id=tenant_id, employee_id=employee.id, category=body.category, amount=body.amount,
         description=body.description, receipt_url=body.receipt_url, is_taxable=body.is_taxable,
         status=ReimbursementStatus.SUBMITTED,
     )
@@ -1541,15 +1722,32 @@ def _component_amount(
     return Decimal("0")
 
 
-def _count_working_days(period_start: date, period_end: date) -> int:
-    """Mon–Fri count in the period. A simple default until per-shift work_days is wired in here."""
-    days = 0
-    d = period_start
-    while d <= period_end:
-        if d.weekday() < 5:
-            days += 1
-        d = date.fromordinal(d.toordinal() + 1)
-    return days
+def _net_floor(settings: PayrollSettings, gross: Decimal) -> Decimal | None:
+    """The lowest net pay PayrollSettings allows for this gross, or None."""
+    floor: Decimal | None = None if settings.allow_negative_net_salary else Decimal("0")
+    if settings.minimum_net_salary is not None:
+        floor = max(floor if floor is not None else settings.minimum_net_salary, settings.minimum_net_salary)
+    if settings.maximum_deduction_percentage is not None:
+        by_pct = (gross * (Decimal("100") - settings.maximum_deduction_percentage) / Decimal("100")).quantize(Decimal("0.01"))
+        floor = by_pct if floor is None else max(floor, by_pct)
+    return floor
+
+
+def _is_payable_in_period(employee: Employee, period_start: date, period_end: date) -> bool:
+    """Who gets a payslip for this period (audit H-9).
+
+    Employed at some point in it (joined by its end, not gone before its
+    start). ON_LEAVE staff are included — their unpaid leave is what reduces
+    their pay; they used to get no payslip at all. Employees who resigned or
+    were terminated get their final, prorated payslip for the period in
+    which they left, and nothing after it."""
+    if employee.date_of_joining and employee.date_of_joining > period_end:
+        return False
+    if employee.date_of_leaving and employee.date_of_leaving < period_start:
+        return False
+    if employee.employment_status in (EmploymentStatus.TERMINATED, EmploymentStatus.RESIGNED):
+        return employee.date_of_leaving is not None and period_start <= employee.date_of_leaving <= period_end
+    return True
 
 
 @router.post("/runs", status_code=status.HTTP_201_CREATED, summary="Create a draft payroll run")
@@ -1559,6 +1757,7 @@ async def create_payroll_run(
     tenant_id: UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    await _assert_period_is_free(db, tenant_id, body.period_start, body.period_end)
     run = PayrollRun(
         tenant_id=tenant_id,
         name=body.name,
@@ -1574,58 +1773,79 @@ async def create_payroll_run(
     return {"id": str(run.id), "created": True}
 
 
-async def _get_leave_days_breakdown(
-    db: AsyncSession, tenant_id: UUID, employee_id: UUID, period_start: date, period_end: date,
-) -> tuple[Decimal, Decimal]:
-    """
-    Returns (paid_leave_days, unpaid_leave_days) for this employee's
-    APPROVED leave requests overlapping the payroll period.
+class PayrollRunUpdate(BaseModel):
+    name: str | None = None
+    period_start: date | None = None
+    period_end: date | None = None
+    pay_date: date | None = None
+    currency: str | None = Field(default=None, max_length=3)
 
-    Bug fix: generate_payroll_run previously counted every AttendanceRecord
-    with status=ON_LEAVE as a fully-paid day, regardless of whether the
-    LeaveType behind it was actually paid (LeaveType.is_paid). This reads
-    the real leave requests + their leave type instead, so e.g. unpaid
-    sick leave correctly reduces earnings proration while paid annual
-    leave doesn't.
+
+@router.patch("/runs/{run_id}", summary="Edit a draft payroll run")
+async def update_payroll_run(
+    run_id: UUID,
+    body: PayrollRunUpdate,
+    current_user: User = Depends(require_permission("payroll.process")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """
-    rows = (
-        await db.execute(
-            select(LeaveRequest, LeaveType.is_paid)
-            .join(LeaveType, LeaveRequest.leave_type_id == LeaveType.id)
-            .where(
-                LeaveRequest.tenant_id == tenant_id,
-                LeaveRequest.employee_id == employee_id,
-                LeaveRequest.status == LeaveRequestStatus.APPROVED,
-                LeaveRequest.start_date <= period_end,
-                LeaveRequest.end_date >= period_start,
-                LeaveRequest.is_deleted == False,  # noqa: E712
-            )
+    Only DRAFT runs can be edited directly. Once payslips exist (any
+    status past DRAFT), the period/name are baked into those payslips and
+    the run's own history — changing them here would silently make
+    existing payslips describe the wrong period. Use Regenerate (same
+    period) or create a new run instead; a genuinely wrong run past DRAFT
+    should be reversed (see /runs/{id}/reverse), not edited.
+    """
+    run = (
+        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+    if run.status != PayrollRunStatus.DRAFT:
+        raise ValidationError(
+            f"Only a DRAFT run can be edited directly (this one is {run.status.value}). "
+            "Reverse it and create a new run if the period/name was wrong."
         )
-    ).all()
 
-    paid_days = Decimal("0")
-    unpaid_days = Decimal("0")
-    for leave_request, is_paid in rows:
-        if leave_request.duration_type != "full_day":
-            # half_day/hourly requests are inherently single-day in this
-            # codebase's duration model — total_days already holds the
-            # fractional day count (e.g. 0.5), just check it falls in-period.
-            days = (
-                leave_request.total_days
-                if period_start <= leave_request.start_date <= period_end
-                else Decimal("0")
-            )
-        else:
-            overlap_start = max(leave_request.start_date, period_start)
-            overlap_end = min(leave_request.end_date, period_end)
-            days = Decimal((overlap_end - overlap_start).days + 1) if overlap_end >= overlap_start else Decimal("0")
+    changes = body.model_dump(exclude_unset=True)
+    if "period_start" in changes or "period_end" in changes:
+        await _assert_period_is_free(
+            db, tenant_id, changes.get("period_start", run.period_start),
+            changes.get("period_end", run.period_end), exclude_run_id=run.id,
+        )
+    for field, value in changes.items():
+        setattr(run, field, value)
+    await db.flush()
+    return {"id": str(run.id), "updated": True}
 
-        if is_paid:
-            paid_days += days
-        else:
-            unpaid_days += days
 
-    return paid_days, unpaid_days
+@router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a draft payroll run")
+async def delete_payroll_run(
+    run_id: UUID,
+    current_user: User = Depends(require_permission("payroll.process")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Only DRAFT runs can be deleted — nothing depends on a run that has
+    never been generated (zero payslips, zero payments, zero audit
+    history worth keeping). Once payslips exist, deleting the run would
+    destroy the payroll record entirely, including for employees who may
+    already be relying on it — use Reverse instead, which voids the run
+    but keeps it (and every payslip) in the audit trail.
+    """
+    run = (
+        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+    if run.status != PayrollRunStatus.DRAFT:
+        raise ValidationError(
+            f"Only a DRAFT run can be deleted (this one is {run.status.value}). Use Reverse instead."
+        )
+    await db.delete(run)
+    await db.flush()
 
 
 @router.post("/runs/{run_id}/generate", summary="Generate payslips for all salaried employees")
@@ -1644,13 +1864,27 @@ async def generate_payroll_run(
     """
     from sqlalchemy.orm import selectinload
 
+    # FOR UPDATE (audit H-2): two "Generate" clicks on the same run used to
+    # run side by side and each insert a full set of payslips (doubling the
+    # run's totals). The row lock makes the second wait for the first; it
+    # then sees the run is no longer DRAFT and stops. uq_payslips_one_per_
+    # run_employee is the database-level backstop.
     run = (
-        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+        await db.execute(
+            select(PayrollRun)
+            .where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id)
+            .with_for_update()
+        )
     ).scalar_one_or_none()
     if run is None:
         raise NotFoundError("Payroll run not found")
-    if run.status != PayrollRunStatus.DRAFT:
-        raise HTTPException(status_code=400, detail=f"Run is {run.status.value} — only DRAFT runs can be (re)generated")
+    # REOPENED too (audit C-6): reopening a locked run used to lead nowhere —
+    # it could not be regenerated, approved or finalized, only reversed.
+    if run.status not in (PayrollRunStatus.DRAFT, PayrollRunStatus.REOPENED):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Run is {run.status.value} — only DRAFT or REOPENED runs can be (re)generated",
+        )
 
     # Clear any previous partial generation for this run (safe: DRAFT only).
     #
@@ -1668,11 +1902,22 @@ async def generate_payroll_run(
     await db.execute(sa_delete(Payslip).where(Payslip.payroll_run_id == run_id))
     await db.flush()
 
-    salaries = (await db.execute(select(EmployeeSalary).where(
-        EmployeeSalary.tenant_id == tenant_id, EmployeeSalary.is_current == True  # noqa: E712
-    ))).scalars().all()
+    # The salary IN EFFECT for this period (audit H-9): the latest one whose
+    # effective_from is on or before the period's last day — not simply
+    # "is_current", which applied a raise dated next month to this run.
+    salary_rows = (await db.execute(select(EmployeeSalary).where(
+        EmployeeSalary.tenant_id == tenant_id,
+        EmployeeSalary.is_deleted == False,  # noqa: E712
+        EmployeeSalary.effective_from <= run.period_end,
+        (EmployeeSalary.effective_to.is_(None)) | (EmployeeSalary.effective_to >= run.period_start),
+    ).order_by(EmployeeSalary.effective_from))).scalars().all()
+    salaries = list({s.employee_id: s for s in salary_rows}.values())  # last wins = latest effective_from
 
-    working_days = _count_working_days(run.period_start, run.period_end)
+    payroll_settings = await _get_or_create_settings(db, tenant_id)
+    org_settings = (
+        await db.execute(select(Organization.settings).where(Organization.id == tenant_id))
+    ).scalar_one_or_none()
+
     total_gross = Decimal("0")
     total_deductions = Decimal("0")
     total_net = Decimal("0")
@@ -1680,11 +1925,12 @@ async def generate_payroll_run(
 
     for salary in salaries:
         employee = (
-            await db.execute(select(Employee).where(Employee.id == salary.employee_id, Employee.tenant_id == tenant_id))
+            await db.execute(select(Employee).where(
+                Employee.id == salary.employee_id, Employee.tenant_id == tenant_id,
+                Employee.is_deleted == False,  # noqa: E712  — deleted employees were still paid (H-9)
+            ))
         ).scalar_one_or_none()
-        if employee is None or employee.employment_status not in (
-            EmploymentStatus.ACTIVE, EmploymentStatus.PROBATION, EmploymentStatus.NOTICE_PERIOD,
-        ):
+        if employee is None or not _is_payable_in_period(employee, run.period_start, run.period_end):
             continue
 
         structure = (
@@ -1705,32 +1951,35 @@ async def generate_payroll_run(
         ).scalars().all()
 
         # Attendance for the period
-        att_stmt = select(AttendanceRecord).where(
-            AttendanceRecord.employee_id == employee.id,
-            AttendanceRecord.tenant_id == tenant_id,
-            AttendanceRecord.date >= run.period_start,
-            AttendanceRecord.date <= run.period_end,
+        # How much of the period this employee is paid for — the organisation's
+        # work week, holidays, joining/leaving dates, recorded absences and
+        # unpaid leave, measured the way PayrollSettings.proration_method says
+        # (audit C-7; see app/services/payroll_calendar.py for the rules).
+        day_inputs = await load_day_inputs(
+            db, tenant_id, employee, run.period_start, run.period_end,
+            payroll_settings.proration_method, payroll_settings.fixed_monthly_divisor, org_settings,
         )
-        records = (await db.execute(att_stmt)).scalars().all()
-        present_days = Decimal(sum(1 for r in records if r.status in (AttendanceStatus.PRESENT, AttendanceStatus.LATE, AttendanceStatus.WORK_FROM_HOME)))
-        absent_days = Decimal(sum(1 for r in records if r.status == AttendanceStatus.ABSENT))
-        leave_days = Decimal(sum(1 for r in records if r.status == AttendanceStatus.ON_LEAVE))
-        overtime_minutes = sum(r.overtime_minutes or 0 for r in records)
+        payable = compute_payable_days(day_inputs)
+        attendance_factor = payable.factor
+        working_days = payable.working_days
+        present_days = payable.paid_days - payable.paid_leave_days
+        absent_days = payable.absent_days
+        paid_leave_days = payable.paid_leave_days
+        unpaid_leave_days = payable.unpaid_leave_days
+        leave_days = paid_leave_days + unpaid_leave_days
+
+        overtime_minutes = (
+            await db.execute(
+                select(func.coalesce(func.sum(AttendanceRecord.overtime_minutes), 0)).where(
+                    AttendanceRecord.employee_id == employee.id,
+                    AttendanceRecord.tenant_id == tenant_id,
+                    AttendanceRecord.is_deleted == False,  # noqa: E712
+                    AttendanceRecord.date >= run.period_start,
+                    AttendanceRecord.date <= run.period_end,
+                )
+            )
+        ).scalar_one()
         overtime_hours = Decimal(overtime_minutes) / Decimal("60")
-
-        # Bug fix: not every leave type is paid. Resolve the actual
-        # approved leave requests (+ their LeaveType.is_paid flag) rather
-        # than assuming every ON_LEAVE attendance day is compensated.
-        paid_leave_days, unpaid_leave_days = await _get_leave_days_breakdown(
-            db, tenant_id, employee.id, run.period_start, run.period_end
-        )
-
-        # Prorate earnings by attendance — if there's no attendance data at
-        # all for the period (e.g. remote/manual-only org), default to full pay.
-        counted_days = present_days + paid_leave_days
-        has_any_data = len(records) > 0 or paid_leave_days > 0 or unpaid_leave_days > 0
-        attendance_factor = (counted_days / Decimal(working_days)) if (working_days > 0 and has_any_data) else Decimal("1")
-        attendance_factor = min(attendance_factor, Decimal("1"))
 
         overrides = {k: v for k, v in (salary.component_overrides or {}).items()}
 
@@ -1780,6 +2029,11 @@ async def generate_payroll_run(
         # count toward taxable_income — computing tax first and adding
         # these afterward would under-tax them.
         loan_advance_deductions = Decimal("0")
+        # What this payslip takes from loans/advances/bonuses/…: written to
+        # the settlement ledger once the payslip exists. The source records
+        # are NOT changed here any more — finalize applies these, reverse and
+        # reopen undo them (audit C-6).
+        settlements: list[tuple[SettlementSource, UUID, Decimal]] = []
 
         active_loans = (
             await db.execute(
@@ -1791,7 +2045,9 @@ async def generate_payroll_run(
             )
         ).scalars().all()
         for loan in active_loans:
-            installment = min(loan.installment_amount, loan.remaining_balance)
+            # Minus whatever another open run has already reserved.
+            available = loan.remaining_balance - await reserved_amount(db, SettlementSource.LOAN, loan.id, run.id)
+            installment = min(loan.installment_amount, available)
             if installment <= 0:
                 continue
             loan_advance_deductions += installment
@@ -1799,9 +2055,7 @@ async def generate_payroll_run(
                 "code": f"LOAN_{str(loan.id)[:8]}", "name": "Loan Repayment", "type": ComponentType.DEDUCTION,
                 "amount": installment, "is_taxable": False, "order": 9200,
             })
-            loan.remaining_balance -= installment
-            if loan.remaining_balance <= 0:
-                loan.status = LoanStatus.CLOSED
+            settlements.append((SettlementSource.LOAN, loan.id, installment))
 
         active_advances = (
             await db.execute(
@@ -1813,7 +2067,8 @@ async def generate_payroll_run(
             )
         ).scalars().all()
         for advance in active_advances:
-            installment = min(advance.installment_amount, advance.remaining_balance)
+            available = advance.remaining_balance - await reserved_amount(db, SettlementSource.ADVANCE, advance.id, run.id)
+            installment = min(advance.installment_amount, available)
             if installment <= 0:
                 continue
             loan_advance_deductions += installment
@@ -1821,9 +2076,7 @@ async def generate_payroll_run(
                 "code": f"ADVANCE_{str(advance.id)[:8]}", "name": "Salary Advance Recovery", "type": ComponentType.DEDUCTION,
                 "amount": installment, "is_taxable": False, "order": 9210,
             })
-            advance.remaining_balance -= installment
-            if advance.remaining_balance <= 0:
-                advance.status = AdvanceStatus.CLOSED
+            settlements.append((SettlementSource.ADVANCE, advance.id, installment))
 
         # Approved, period-matched bonuses/arrears/commissions/reimbursements
         # — PENDING ones are visible for review but never silently paid.
@@ -1838,6 +2091,8 @@ async def generate_payroll_run(
             )
         ).scalars().all()
         for bonus in approved_bonuses:
+            if await is_reserved(db, SettlementSource.BONUS, bonus.id, run.id):
+                continue  # already in another open run
             gross += bonus.amount
             if bonus.is_taxable:
                 taxable_income += bonus.amount
@@ -1845,7 +2100,7 @@ async def generate_payroll_run(
                 "code": f"BONUS_{bonus.bonus_type.value.upper()}", "name": bonus.name, "type": ComponentType.EARNING,
                 "amount": bonus.amount, "is_taxable": bonus.is_taxable, "order": 9300,
             })
-            bonus.status = BonusStatus.PAID
+            settlements.append((SettlementSource.BONUS, bonus.id, bonus.amount))
 
         approved_arrears = (
             await db.execute(
@@ -1858,6 +2113,8 @@ async def generate_payroll_run(
             )
         ).scalars().all()
         for arrear in approved_arrears:
+            if await is_reserved(db, SettlementSource.ARREAR, arrear.id, run.id):
+                continue
             gross += arrear.amount
             if arrear.is_taxable:
                 taxable_income += arrear.amount
@@ -1865,7 +2122,7 @@ async def generate_payroll_run(
                 "code": "ARREAR", "name": f"Arrear: {arrear.reason}", "type": ComponentType.EARNING,
                 "amount": arrear.amount, "is_taxable": arrear.is_taxable, "order": 9310,
             })
-            arrear.status = ArrearStatus.PAID
+            settlements.append((SettlementSource.ARREAR, arrear.id, arrear.amount))
 
         approved_commissions = (
             await db.execute(
@@ -1878,13 +2135,15 @@ async def generate_payroll_run(
             )
         ).scalars().all()
         for commission in approved_commissions:
+            if await is_reserved(db, SettlementSource.COMMISSION, commission.id, run.id):
+                continue
             gross += commission.computed_amount
             taxable_income += commission.computed_amount  # commission is standard taxable income
             lines.append({
                 "code": "COMMISSION", "name": "Sales Commission", "type": ComponentType.EARNING,
                 "amount": commission.computed_amount, "is_taxable": True, "order": 9320,
             })
-            commission.status = CommissionStatus.PAID
+            settlements.append((SettlementSource.COMMISSION, commission.id, commission.computed_amount))
 
         approved_reimbursements = (
             await db.execute(
@@ -1895,6 +2154,8 @@ async def generate_payroll_run(
             )
         ).scalars().all()
         for reimbursement in approved_reimbursements:
+            if await is_reserved(db, SettlementSource.REIMBURSEMENT, reimbursement.id, run.id):
+                continue
             gross += reimbursement.amount
             if reimbursement.is_taxable:
                 taxable_income += reimbursement.amount
@@ -1903,7 +2164,7 @@ async def generate_payroll_run(
                 "name": f"Reimbursement: {reimbursement.category.value.title()}", "type": ComponentType.EARNING,
                 "amount": reimbursement.amount, "is_taxable": reimbursement.is_taxable, "order": 9330,
             })
-            reimbursement.status = ReimbursementStatus.INCLUDED_IN_PAYROLL
+            settlements.append((SettlementSource.REIMBURSEMENT, reimbursement.id, reimbursement.amount))
 
         # ── Deductions (GROSS + every earning code now available to formulas) ──
         deduction_context = {"BASIC": salary.basic_salary, "GROSS": gross, **prorated_earnings}
@@ -2001,6 +2262,36 @@ async def generate_payroll_run(
 
         net = gross - deductions - loan_advance_deductions
 
+        # Net-salary floor from PayrollSettings (audit H-9 — these settings
+        # were stored but never applied, so net pay could go negative).
+        # Only loan / advance installments are trimmed, lowest priority
+        # first; the trimmed part is simply collected in a later run, since
+        # the ledger only records what this payslip actually took. Tax and
+        # other statutory deductions are never cut.
+        floor = _net_floor(payroll_settings, gross)
+        if floor is not None and net < floor:
+            shortfall = floor - net
+            for idx in range(len(settlements) - 1, -1, -1):
+                if shortfall <= 0:
+                    break
+                source_type, source_id, amount = settlements[idx]
+                if source_type not in (SettlementSource.LOAN, SettlementSource.ADVANCE):
+                    continue
+                cut = min(amount, shortfall)
+                settlements[idx] = (source_type, source_id, amount - cut)
+                code = f"{'LOAN' if source_type == SettlementSource.LOAN else 'ADVANCE'}_{str(source_id)[:8]}"
+                for line in lines:
+                    if line["code"] == code:
+                        line["amount"] -= cut
+                loan_advance_deductions -= cut
+                shortfall -= cut
+            settlements = [s for s in settlements if s[2] > 0]
+            lines = [
+                line for line in lines
+                if not (str(line["code"]).startswith(("LOAN_", "ADVANCE_")) and line["amount"] <= 0)
+            ]
+            net = gross - deductions - loan_advance_deductions
+
         payslip = Payslip(
             tenant_id=tenant_id,
             payroll_run_id=run.id,
@@ -2018,6 +2309,8 @@ async def generate_payroll_run(
         )
         db.add(payslip)
         await db.flush()
+        for source_type, source_id, amount in settlements:
+            record_settlement(db, tenant_id, run.id, payslip.id, source_type, source_id, amount)
 
         for line in lines:
             db.add(PayslipLine(
@@ -2041,6 +2334,7 @@ async def generate_payroll_run(
     run.total_net = total_net
     run.employee_count = generated
     run.status = PayrollRunStatus.REVIEW
+    run.processed_by_id = current_user.id  # who generated it — they can't also approve it (H-10)
 
     await db.flush()
     return {
@@ -2053,28 +2347,429 @@ async def generate_payroll_run(
     }
 
 
-@router.post("/runs/{run_id}/approve", summary="Approve a payroll run")
+class ApprovalLevelCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    level_order: int = Field(ge=1)
+    required_permission: str = "payroll.approve"
+
+
+class ApprovalDecisionInput(BaseModel):
+    decision: ApprovalDecision = ApprovalDecision.APPROVED
+    comments: str | None = None
+
+
+@router.get("/approval-levels", summary="List configured approval levels")
+async def list_approval_levels(
+    current_user: User = Depends(require_permission("payroll.manage_settings")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    levels = (
+        await db.execute(
+            select(PayrollApprovalLevel)
+            .where(PayrollApprovalLevel.tenant_id == tenant_id, PayrollApprovalLevel.is_deleted == False)  # noqa: E712
+            .order_by(PayrollApprovalLevel.level_order)
+        )
+    ).scalars().all()
+    return {"items": [
+        {"id": str(l.id), "name": l.name, "level_order": l.level_order, "required_permission": l.required_permission, "is_active": l.is_active}
+        for l in levels
+    ], "total": len(levels)}
+
+
+@router.post("/approval-levels", status_code=status.HTTP_201_CREATED, summary="Add an approval level to the chain")
+async def create_approval_level(
+    body: ApprovalLevelCreate,
+    current_user: User = Depends(require_permission("payroll.manage_settings")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    # A typo here made the level impossible to approve — nobody could ever
+    # hold a permission that doesn't exist, so the run stayed in REVIEW (H-10).
+    known = (
+        await db.execute(select(Permission.id).where(Permission.codename == body.required_permission))
+    ).first()
+    if known is None:
+        raise ValidationError(f"'{body.required_permission}' is not a permission that exists")
+    taken = (
+        await db.execute(select(PayrollApprovalLevel.id).where(
+            PayrollApprovalLevel.tenant_id == tenant_id,
+            PayrollApprovalLevel.level_order == body.level_order,
+            PayrollApprovalLevel.is_active == True,  # noqa: E712
+            PayrollApprovalLevel.is_deleted == False,  # noqa: E712
+        ))
+    ).first()
+    if taken is not None:
+        raise ConflictError(f"Another approval level already has order {body.level_order}")
+    level = PayrollApprovalLevel(
+        tenant_id=tenant_id, name=body.name.strip(), level_order=body.level_order,
+        required_permission=body.required_permission, is_active=True,
+    )
+    db.add(level)
+    await db.flush()
+    return {"id": str(level.id), "name": level.name, "level_order": level.level_order}
+
+
+@router.post("/runs/{run_id}/approve", summary="Record an approval decision for a payroll run")
 async def approve_payroll_run(
     run_id: UUID,
+    body: ApprovalDecisionInput = ApprovalDecisionInput(),
     current_user: User = Depends(require_permission("payroll.approve")),
     tenant_id: UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    from datetime import datetime, timezone
+    """
+    Record one approval decision (audit finding H-10).
 
+    No approval levels configured → one approval moves REVIEW → APPROVED.
+    With levels → they are signed off IN ORDER: each call approves the next
+    level still waiting, and only someone holding that level's permission
+    can do it. The run is APPROVED when the last level is.
+
+    Segregation of duties (organisation owners / full-access users are
+    exempt, so a one-admin organisation can still run payroll):
+      * whoever generated the run cannot approve it;
+      * one person approves at most one level of the same run.
+
+    REJECTED sends the run back to DRAFT so it can be corrected and
+    regenerated, and retires this round's approvals — they approved numbers
+    that are about to change. (It used to leave the run in REVIEW, where it
+    could be neither regenerated nor fixed, and the old approvals still
+    counted towards the next round.) Every decision stays in the audit log.
+    """
+    # Row lock: two approvers clicking at the same moment take turns.
     run = (
-        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+        await db.execute(
+            select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id).with_for_update()
+        )
     ).scalar_one_or_none()
     if run is None:
         raise NotFoundError("Payroll run not found")
     if run.status != PayrollRunStatus.REVIEW:
         raise HTTPException(status_code=400, detail=f"Run must be in REVIEW to approve (currently {run.status.value})")
 
-    run.status = PayrollRunStatus.APPROVED
-    run.approved_by_id = current_user.id
-    run.approved_at = datetime.now(timezone.utc)
+    levels = (
+        await db.execute(
+            select(PayrollApprovalLevel).where(
+                PayrollApprovalLevel.tenant_id == tenant_id, PayrollApprovalLevel.is_active == True,  # noqa: E712
+                PayrollApprovalLevel.is_deleted == False,  # noqa: E712
+            ).order_by(PayrollApprovalLevel.level_order)
+        )
+    ).scalars().all()
+    # This round's approvals — earlier rounds are removed on reject/reopen.
+    this_round = (
+        await db.execute(
+            select(PayrollApproval).where(
+                PayrollApproval.payroll_run_id == run.id, PayrollApproval.decision == ApprovalDecision.APPROVED,
+            )
+        )
+    ).scalars().all()
+    approved_level_ids = {a.level_id for a in this_round if a.level_id is not None}
+
+    exempt = current_user.has_full_access
+    if run.processed_by_id == current_user.id and not exempt:
+        raise PermissionDeniedError("You generated this payroll run — someone else has to approve or reject it")
+
+    next_level = None
+    if levels:
+        waiting = [lvl for lvl in levels if lvl.id not in approved_level_ids]
+        next_level = waiting[0]
+        if not current_user.has_permission(next_level.required_permission):
+            raise PermissionDeniedError(
+                f"This run is waiting for the '{next_level.name}' approval, "
+                f"which needs the '{next_level.required_permission}' permission"
+            )
+        if not exempt and any(a.approved_by_id == current_user.id for a in this_round):
+            raise PermissionDeniedError(
+                "You have already approved another level of this run — a different person must approve this one"
+            )
+
+    await _write_audit_log(
+        db, tenant_id, current_user.id, f"RUN_{body.decision.value.upper()}", "PayrollRun", run.id,
+        new_value={"level": next_level.name if next_level else "single-step"}, reason=body.comments,
+    )
+
+    if body.decision == ApprovalDecision.REJECTED:
+        for approval in this_round:
+            await db.delete(approval)
+        run.status = PayrollRunStatus.DRAFT
+        run.approved_by_id = None
+        run.approved_at = None
+        await db.flush()
+        return {"id": str(run.id), "status": run.status.value, "decision": "rejected"}
+
+    db.add(PayrollApproval(
+        tenant_id=tenant_id, payroll_run_id=run.id, level_id=next_level.id if next_level else None,
+        approved_by_id=current_user.id, decision=body.decision, comments=body.comments,
+    ))
+    if next_level is None or [lvl.id for lvl in levels if lvl.id not in approved_level_ids] == [next_level.id]:
+        run.status = PayrollRunStatus.APPROVED
+        run.approved_by_id = current_user.id
+        run.approved_at = datetime.now(UTC)
+        await db.flush()
+        return {"id": str(run.id), "status": run.status.value, "fully_approved": True}
     await db.flush()
+    return {
+        "id": str(run.id), "status": run.status.value, "fully_approved": False,
+        "levels_approved": len(approved_level_ids) + 1, "levels_required": len(levels),
+    }
+
+
+@router.post("/runs/{run_id}/finalize", summary="Finalize (lock) an approved payroll run and take a snapshot")
+async def finalize_payroll_run(
+    run_id: UUID,
+    current_user: User = Depends(require_permission("payroll.finalize")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Freezes the run: takes a PayrollSnapshot of every rule/rate/structure
+    version actually used, then locks the run so normal edits are blocked.
+    A locked run can only be changed via an explicit, audited /reopen call.
+    """
+    from sqlalchemy.orm import selectinload
+
+    run = (
+        await db.execute(
+            select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id)
+            .options(selectinload(PayrollRun.payslips).selectinload(Payslip.lines))
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+    if run.status != PayrollRunStatus.APPROVED:
+        raise HTTPException(status_code=400, detail=f"Run must be APPROVED to finalize (currently {run.status.value})")
+
+    # Loans go down, bonuses/arrears/commissions become PAID, reimbursements
+    # INCLUDED_IN_PAYROLL — here, and not at generation (audit C-6).
+    await apply_run(db, run)
+
+    settings = await _get_or_create_settings(db, tenant_id)
+    tax_rule = (
+        await db.execute(
+            select(PayrollTaxRule).where(
+                PayrollTaxRule.tenant_id == tenant_id, PayrollTaxRule.is_active == True,  # noqa: E712
+                PayrollTaxRule.effective_from <= run.pay_date,
+                (PayrollTaxRule.effective_to.is_(None)) | (PayrollTaxRule.effective_to >= run.pay_date),
+            ).order_by(PayrollTaxRule.effective_from.desc())
+        )
+    ).scalars().first()
+    contribution_rules = (
+        await db.execute(
+            select(PayrollContributionRule).where(
+                PayrollContributionRule.tenant_id == tenant_id, PayrollContributionRule.is_active == True,  # noqa: E712
+            )
+        )
+    ).scalars().all()
+
+    snapshot_data = {
+        "run": {
+            "id": str(run.id), "name": run.name, "period_start": str(run.period_start), "period_end": str(run.period_end),
+            "pay_date": str(run.pay_date), "total_gross": str(run.total_gross), "total_deductions": str(run.total_deductions),
+            "total_net": str(run.total_net), "employee_count": run.employee_count,
+        },
+        "settings": _serialize_settings(settings),
+        "tax_rule": {"id": str(tax_rule.id), "name": tax_rule.name, "tax_year": tax_rule.tax_year} if tax_rule else None,
+        "contribution_rules": [{"id": str(r.id), "code": r.code, "name": r.name} for r in contribution_rules],
+        "payslips": [
+            {
+                "id": str(p.id), "employee_id": str(p.employee_id), "gross_salary": str(p.gross_salary),
+                "total_deductions": str(p.total_deductions), "net_salary": str(p.net_salary),
+                "lines": [{"code": l.component_code, "name": l.component_name, "amount": str(l.amount)} for l in p.lines],
+            }
+            for p in run.payslips
+        ],
+    }
+
+    snapshot = PayrollSnapshot(
+        tenant_id=tenant_id, payroll_run_id=run.id, snapshot_data=snapshot_data, taken_by_id=current_user.id,
+    )
+    db.add(snapshot)
+
+    run.status = PayrollRunStatus.LOCKED
+    run.locked_by_id = current_user.id
+    run.locked_at = datetime.now(UTC)
+    await db.flush()
+
+    await _write_audit_log(db, tenant_id, current_user.id, "RUN_FINALIZED", "PayrollRun", run.id, new_value={"status": "locked"})
+    return {"id": str(run.id), "status": run.status.value, "snapshot_id": str(snapshot.id)}
+
+
+class ReopenRequest(BaseModel):
+    reason: str
+
+
+@router.post("/runs/{run_id}/reopen", summary="Reopen a locked payroll run for correction")
+async def reopen_payroll_run(
+    run_id: UUID,
+    body: ReopenRequest,
+    current_user: User = Depends(require_permission("payroll.reopen")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    A reason is mandatory — a locked/finalized payroll being reopened is
+    exactly the kind of event that must always be explainable later. The
+    existing snapshot is left untouched (it still represents what was
+    ORIGINALLY finalized); a new one is taken on the next finalize.
+    """
+    run = (
+        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+    if run.status != PayrollRunStatus.LOCKED:
+        raise HTTPException(status_code=400, detail=f"Run must be LOCKED to reopen (currently {run.status.value})")
+    if not body.reason.strip():
+        raise ValidationError("A reason is required to reopen a locked payroll run")
+
+    # Money already moved → a correcting run is needed, not a reopen: the
+    # regeneration that follows a reopen replaces this run's payslips.
+    paid = (
+        await db.execute(
+            select(func.count()).select_from(Payslip)
+            .where(Payslip.payroll_run_id == run.id, Payslip.status == PayslipStatus.PAID)
+        )
+    ).scalar_one()
+    batches = (
+        await db.execute(
+            select(func.count()).select_from(PaymentBatch)
+            .where(PaymentBatch.payroll_run_id == run.id, PaymentBatch.is_deleted == False)  # noqa: E712
+        )
+    ).scalar_one()
+    if paid or batches:
+        raise ConflictError(
+            "This run already has a payment batch or paid payslips — correct it with a new run instead of reopening"
+        )
+
+    # Give back what finalize took from loans/bonuses/… (audit C-6), and
+    # retire the approvals: they approved the OLD numbers, so the corrected
+    # run needs fresh ones. They stay recorded in the audit log.
+    restored = await undo_run(db, run)
+    old_approvals = (
+        await db.execute(select(PayrollApproval).where(PayrollApproval.payroll_run_id == run.id))
+    ).scalars().all()
+    for approval in old_approvals:
+        await db.delete(approval)
+
+    previous_status = run.status.value
+    run.status = PayrollRunStatus.REOPENED
+    run.reopened_by_id = current_user.id
+    run.reopened_at = datetime.now(UTC)
+    run.reopen_reason = body.reason
+    await db.flush()
+
+    await _write_audit_log(
+        db, tenant_id, current_user.id, "RUN_REOPENED", "PayrollRun", run.id,
+        previous_value={"status": previous_status},
+        new_value={"status": run.status.value, "settlements_restored": restored, "approvals_cleared": len(old_approvals)},
+        reason=body.reason,
+    )
     return {"id": str(run.id), "status": run.status.value}
+
+
+class ReverseRequest(BaseModel):
+    reason: str
+
+
+@router.post("/runs/{run_id}/reverse", summary="Reverse a payroll run — voids it and all its payslips")
+async def reverse_payroll_run(
+    run_id: UUID,
+    body: ReverseRequest,
+    current_user: User = Depends(require_permission("payroll.reverse")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Voids the run and marks every payslip REVERSED (never deleted — the
+    reversal itself must remain auditable). Blocked once any payslip is
+    already PAID: reversing paid salaries needs a real financial
+    correction process (a new negative-adjustment run), not silently
+    erasing the record that money already moved.
+    """
+    run = (
+        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+    if run.status in (PayrollRunStatus.CANCELLED,):
+        raise HTTPException(status_code=400, detail="Run is already cancelled")
+    if not body.reason.strip():
+        raise ValidationError("A reason is required to reverse a payroll run")
+
+    paid_count = (
+        await db.execute(
+            select(func.count()).select_from(Payslip).where(Payslip.payroll_run_id == run.id, Payslip.status == PayslipStatus.PAID)
+        )
+    ).scalar_one()
+    if paid_count > 0:
+        raise ValidationError(
+            f"{paid_count} payslip(s) in this run are already marked PAID — reverse via a correcting run instead of voiding paid salaries"
+        )
+
+    previous_status = run.status.value
+    # Restore loans, advances, bonuses, arrears, commissions and
+    # reimbursements exactly as they were (audit C-6). Only runs generated
+    # after the settlement ledger existed can be restored this way.
+    restored = await undo_run(db, run)
+    # Its bank transfers that haven't been paid must not be paid any more.
+    batch_ids = select(PaymentBatch.id).where(PaymentBatch.payroll_run_id == run.id)
+    await db.execute(
+        PaymentBatchItem.__table__.update()
+        .where(PaymentBatchItem.batch_id.in_(batch_ids), PaymentBatchItem.status == PaymentItemStatus.PENDING)
+        .values(status=PaymentItemStatus.FAILED, failure_reason="Payroll run reversed")
+    )
+    await db.execute(
+        PaymentBatch.__table__.update()
+        .where(PaymentBatch.payroll_run_id == run.id, PaymentBatch.status != PaymentBatchStatus.COMPLETED)
+        .values(status=PaymentBatchStatus.FAILED)
+    )
+    await db.execute(
+        Payslip.__table__.update()
+        .where(Payslip.payroll_run_id == run.id)
+        .values(status=PayslipStatus.REVERSED)
+    )
+    run.status = PayrollRunStatus.CANCELLED
+    run.reversed_by_id = current_user.id
+    run.reversed_at = datetime.now(UTC)
+    run.reversal_reason = body.reason
+    await db.flush()
+
+    await _write_audit_log(
+        db, tenant_id, current_user.id, "RUN_REVERSED", "PayrollRun", run.id,
+        previous_value={"status": previous_status},
+        new_value={"status": run.status.value, "settlements_restored": restored},
+        reason=body.reason,
+    )
+    return {"id": str(run.id), "status": run.status.value}
+
+
+@router.get("/runs/{run_id}/audit-log", summary="Get the audit trail for a payroll run")
+async def get_run_audit_log(
+    run_id: UUID,
+    current_user: User = Depends(require_permission("payroll.view")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    entries = (
+        await db.execute(
+            select(PayrollAuditLog).where(
+                PayrollAuditLog.tenant_id == tenant_id, PayrollAuditLog.entity_type == "PayrollRun",
+                PayrollAuditLog.entity_id == run_id,
+            ).order_by(PayrollAuditLog.created_at.desc())
+        )
+    ).scalars().all()
+    return {
+        "items": [
+            {
+                "id": str(e.id), "user_id": str(e.user_id), "action": e.action,
+                "previous_value": e.previous_value, "new_value": e.new_value, "reason": e.reason,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in entries
+        ],
+        "total": len(entries),
+    }
 
 
 @router.get("/runs/{run_id}", summary="Get a single payroll run")
@@ -2137,6 +2832,74 @@ async def list_payroll_runs(
     }
 
 
+@router.get(
+    "/payslips/me",
+    summary="List the caller's own payslips across all runs (self-service, no payroll.view required)",
+)
+async def list_my_payslips(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The employee-facing counterpart to GET /runs (which is locked
+    behind payroll.view for the admin payroll-runs table). Without this,
+    the only way to list payslips was /runs/{run_id}/payslips — fine once
+    you already know a run_id, but an employee has no admin-only way to
+    discover one, so "browse my own payslip history" had nothing to call.
+    Scoped to the caller's own Employee record; there is no permission
+    gate here beyond having a linked employee profile, matching the same
+    self-service pattern as /work-sessions/me and /leave/balances.
+    """
+    from sqlalchemy.orm import selectinload
+
+    own_employee = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
+    if own_employee is None:
+        raise EmployeeProfileNotLinkedError()
+
+    filters = [Payslip.employee_id == own_employee.id, Payslip.tenant_id == tenant_id]
+    offset = (page - 1) * page_size
+    stmt = (
+        select(Payslip)
+        .where(*filters)
+        .options(selectinload(Payslip.payroll_run))
+        .join(PayrollRun, Payslip.payroll_run_id == PayrollRun.id)
+        .order_by(PayrollRun.pay_date.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    count_stmt = select(func.count()).select_from(Payslip).where(*filters)
+
+    items = (await db.execute(stmt)).scalars().all()
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    return {
+        "items": [
+            {
+                "id": str(p.id),
+                "status": p.status.value,
+                "gross_salary": str(p.gross_salary),
+                "total_deductions": str(p.total_deductions),
+                "net_salary": str(p.net_salary),
+                "run": {
+                    "id": str(p.payroll_run.id),
+                    "name": p.payroll_run.name,
+                    "period_start": str(p.payroll_run.period_start),
+                    "period_end": str(p.payroll_run.period_end),
+                    "pay_date": str(p.payroll_run.pay_date),
+                    "currency": p.payroll_run.currency,
+                },
+            }
+            for p in items
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, -(-total // page_size)),
+    }
+
+
 @router.get("/runs/{run_id}/payslips", summary="List payslips for a run")
 async def list_payslips(
     run_id: UUID,
@@ -2155,7 +2918,7 @@ async def list_payslips(
     if not current_user.has_permission("payroll.view"):
         own_employee = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
         if own_employee is None:
-            raise NotFoundError("Employee profile not found for this user")
+            raise EmployeeProfileNotLinkedError()
         filters.append(Payslip.employee_id == own_employee.id)
 
     from sqlalchemy.orm import selectinload
@@ -2392,3 +3155,570 @@ def _render_payslip_pdf(payslip: Payslip, employee, emp_user, run, lines: list[P
 
     doc.build(elements)
     return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 5: YTD, Variance Report, Accounting Integration, Payment Processing, Dashboard
+# ═══════════════════════════════════════════════════════════════════════════
+@router.get("/employees/{employee_id}/ytd", summary="Get an employee's year-to-date payroll summary")
+async def get_employee_ytd(
+    employee_id: UUID,
+    year: int = Query(default_factory=lambda: date.today().year),
+    current_user: User = Depends(get_current_user),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Derived from FINALIZED (locked/paid) payrolls only — a draft or
+    still-under-review run's numbers are provisional and must never leak
+    into an employee's official YTD figures.
+    """
+    if not current_user.has_permission("payroll.view"):
+        own_employee = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
+        if own_employee is None or own_employee.id != employee_id:
+            raise PermissionDeniedError("You can only view your own YTD summary.")
+
+    from sqlalchemy.orm import selectinload
+
+    payslips = (
+        await db.execute(
+            select(Payslip)
+            .join(PayrollRun, Payslip.payroll_run_id == PayrollRun.id)
+            .where(
+                Payslip.employee_id == employee_id, Payslip.tenant_id == tenant_id,
+                PayrollRun.status.in_([PayrollRunStatus.LOCKED, PayrollRunStatus.PAID]),
+                func.extract("year", PayrollRun.pay_date) == year,
+            )
+            .options(selectinload(Payslip.lines))
+        )
+    ).scalars().all()
+
+    ytd_gross = sum((p.gross_salary for p in payslips), Decimal("0"))
+    ytd_deductions = sum((p.total_deductions for p in payslips), Decimal("0"))
+    ytd_net = sum((p.net_salary for p in payslips), Decimal("0"))
+    ytd_tax = Decimal("0")
+    ytd_bonuses = Decimal("0")
+    ytd_reimbursements = Decimal("0")
+    ytd_contributions_employee = Decimal("0")
+    ytd_taxable_income = Decimal("0")
+
+    for p in payslips:
+        for line in p.lines:
+            if line.component_code == "TAX":
+                ytd_tax += line.amount
+            elif line.component_code.startswith("BONUS_"):
+                ytd_bonuses += line.amount
+            elif line.component_code.startswith("REIMB_"):
+                ytd_reimbursements += line.amount
+            elif line.component_code.endswith("_EE"):
+                ytd_contributions_employee += line.amount
+            if line.component_type == ComponentType.EARNING and line.is_taxable:
+                ytd_taxable_income += line.amount
+
+    return {
+        "employee_id": str(employee_id),
+        "year": year,
+        "payroll_count": len(payslips),
+        "ytd_gross": str(ytd_gross),
+        "ytd_taxable_income": str(ytd_taxable_income),
+        "ytd_tax": str(ytd_tax),
+        "ytd_deductions": str(ytd_deductions),
+        "ytd_contributions_employee": str(ytd_contributions_employee),
+        "ytd_bonuses": str(ytd_bonuses),
+        "ytd_reimbursements": str(ytd_reimbursements),
+        "ytd_net": str(ytd_net),
+    }
+
+
+@router.get("/runs/{run_id}/variance", summary="Compare this run against the previous one")
+async def get_run_variance(
+    run_id: UUID,
+    current_user: User = Depends(require_permission("payroll.view")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    current = (
+        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if current is None:
+        raise NotFoundError("Payroll run not found")
+
+    previous = (
+        await db.execute(
+            select(PayrollRun).where(
+                PayrollRun.tenant_id == tenant_id, PayrollRun.id != current.id,
+                PayrollRun.period_start < current.period_start,
+                PayrollRun.status.in_([PayrollRunStatus.LOCKED, PayrollRunStatus.APPROVED, PayrollRunStatus.PAID]),
+            ).order_by(PayrollRun.period_start.desc())
+        )
+    ).scalars().first()
+
+    if previous is None:
+        return {"current": {"id": str(current.id), "total_gross": str(current.total_gross), "total_net": str(current.total_net)}, "previous": None, "message": "No prior comparable run found"}
+
+    def _variance(curr: Decimal, prev: Decimal) -> dict:
+        diff = curr - prev
+        pct = (diff / prev * 100).quantize(Decimal("0.01")) if prev != 0 else None
+        return {"current": str(curr), "previous": str(prev), "change": str(diff), "change_percentage": str(pct) if pct is not None else None}
+
+    return {
+        "current_run": {"id": str(current.id), "name": current.name, "period_start": str(current.period_start)},
+        "previous_run": {"id": str(previous.id), "name": previous.name, "period_start": str(previous.period_start)},
+        "gross_salary": _variance(current.total_gross, previous.total_gross),
+        "deductions": _variance(current.total_deductions, previous.total_deductions),
+        "net_salary": _variance(current.total_net, previous.total_net),
+        "employee_count": _variance(Decimal(current.employee_count), Decimal(previous.employee_count)),
+    }
+
+
+class AccountMappingCreate(BaseModel):
+    purpose: AccountMappingPurpose
+    account_code: str
+    account_name: str
+
+
+@router.get("/account-mappings", summary="List configured accounting mappings")
+async def list_account_mappings(
+    current_user: User = Depends(require_permission("payroll.manage_settings")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    configured = (
+        await db.execute(select(PayrollAccountMapping).where(PayrollAccountMapping.tenant_id == tenant_id, PayrollAccountMapping.is_deleted == False))  # noqa: E712
+    ).scalars().all()
+    configured_map = {m.purpose: m for m in configured}
+
+    items = []
+    for purpose in AccountMappingPurpose:
+        if purpose in configured_map:
+            m = configured_map[purpose]
+            items.append({"purpose": purpose.value, "account_code": m.account_code, "account_name": m.account_name, "is_configured": True})
+        else:
+            code, name = DEFAULT_ACCOUNT_CODES[purpose]
+            items.append({"purpose": purpose.value, "account_code": code, "account_name": name, "is_configured": False})
+    return {"items": items}
+
+
+@router.put("/account-mappings/{purpose}", summary="Set the account mapping for a journal-entry purpose")
+async def upsert_account_mapping(
+    purpose: AccountMappingPurpose,
+    body: AccountMappingCreate,
+    current_user: User = Depends(require_permission("payroll.manage_settings")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    existing = (
+        await db.execute(
+            select(PayrollAccountMapping).where(PayrollAccountMapping.tenant_id == tenant_id, PayrollAccountMapping.purpose == purpose)
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.account_code = body.account_code
+        existing.account_name = body.account_name
+    else:
+        existing = PayrollAccountMapping(tenant_id=tenant_id, purpose=purpose, account_code=body.account_code, account_name=body.account_name)
+        db.add(existing)
+    await db.flush()
+    return {"purpose": purpose.value, "account_code": existing.account_code, "account_name": existing.account_name}
+
+
+@router.get("/runs/{run_id}/journal-entries", summary="Generate accounting journal entries for a run")
+async def get_run_journal_entries(
+    run_id: UUID,
+    current_user: User = Depends(require_permission("payroll.view")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from sqlalchemy.orm import selectinload
+
+    run = (
+        await db.execute(
+            select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id)
+            .options(selectinload(PayrollRun.payslips).selectinload(Payslip.lines))
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+
+    mapping_rows = (
+        await db.execute(select(PayrollAccountMapping).where(PayrollAccountMapping.tenant_id == tenant_id, PayrollAccountMapping.is_deleted == False))  # noqa: E712
+    ).scalars().all()
+    mappings = {m.purpose: (m.account_code, m.account_name) for m in mapping_rows}
+
+    all_lines = [
+        PayslipLineData(code=l.component_code, component_type=l.component_type.value, amount=l.amount)
+        for p in run.payslips for l in p.lines
+    ]
+    net_total = sum((p.net_salary for p in run.payslips), Decimal("0"))
+
+    entries = generate_journal_entries(all_lines, net_total, mappings)
+    unmapped_purposes = [e.purpose.value for e in entries if e.account_code.endswith("-UNMAPPED")]
+
+    return {
+        "run_id": str(run.id), "run_name": run.name, "period_end": str(run.period_end),
+        "entries": [
+            {"purpose": e.purpose.value, "account_code": e.account_code, "account_name": e.account_name, "debit": str(e.debit), "credit": str(e.credit)}
+            for e in entries
+        ],
+        "total_debits": str(total_debits(entries)),
+        "total_credits": str(total_credits(entries)),
+        "is_balanced": total_debits(entries) == total_credits(entries),
+        "warning": (
+            f"{len(unmapped_purposes)} account(s) are unmapped — configure them in Payroll Settings before posting: {', '.join(unmapped_purposes)}"
+            if unmapped_purposes else None
+        ),
+    }
+
+
+def _serialize_payment_item(i: PaymentBatchItem) -> dict:
+    return {
+        "id": str(i.id), "payslip_id": str(i.payslip_id), "employee_id": str(i.employee_id),
+        "amount": str(i.amount), "bank_name": i.bank_name, "bank_account_number": i.bank_account_number,
+        "bank_account_title": i.bank_account_title, "status": i.status.value,
+        "payment_reference": i.payment_reference, "paid_at": i.paid_at.isoformat() if i.paid_at else None,
+        "failure_reason": i.failure_reason,
+    }
+
+
+@router.post("/runs/{run_id}/payment-batch", status_code=status.HTTP_201_CREATED, summary="Prepare a bank-transfer payment batch for a run")
+async def create_payment_batch(
+    run_id: UUID,
+    current_user: User = Depends(require_permission("payroll.export")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Snapshots each employee's CURRENT bank details into the batch item —
+    a later change to Employee.bank_account_number must never retroactively
+    alter what this batch says was paid where. Does not touch payroll or
+    payslip status: preparing a payment batch is not the same as money
+    having moved (see PaymentBatch docstring).
+    """
+    run = (
+        await db.execute(select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+    if run.status not in (PayrollRunStatus.APPROVED, PayrollRunStatus.LOCKED):
+        raise ValidationError(f"Run must be APPROVED or LOCKED to prepare payment (currently {run.status.value})")
+
+    existing_batch = (
+        await db.execute(select(PaymentBatch).where(PaymentBatch.payroll_run_id == run.id, PaymentBatch.is_deleted == False))  # noqa: E712
+    ).scalar_one_or_none()
+    if existing_batch is not None:
+        raise ValidationError("A payment batch already exists for this run")
+
+    payslips = (await db.execute(select(Payslip).where(
+        Payslip.payroll_run_id == run.id,
+        Payslip.is_deleted == False,  # noqa: E712
+        Payslip.status != PayslipStatus.REVERSED,
+    ))).scalars().all()
+    employee_ids = [p.employee_id for p in payslips]
+    employees = (await db.execute(select(Employee).where(Employee.id.in_(employee_ids)))).scalars().all() if employee_ids else []
+    employee_map = {e.id: e for e in employees}
+
+    # Only what can actually be paid goes into the bank file (audit H-11):
+    # a zero/negative net pays nothing, and a row without an account number
+    # is rejected by the bank. Everything left out is reported back.
+    payable, skipped = [], []
+    for p in payslips:
+        emp = employee_map.get(p.employee_id)
+        if p.net_salary <= 0:
+            skipped.append({"employee_id": str(p.employee_id), "reason": "net salary is zero or negative"})
+        elif emp is None or not (emp.bank_account_number or "").strip():
+            skipped.append({"employee_id": str(p.employee_id), "reason": "no bank account number"})
+        else:
+            payable.append((p, emp))
+    if not payable:
+        raise ValidationError("No payslip in this run can be paid by bank transfer", detail=skipped)
+
+    total = sum((p.net_salary for p, _ in payable), Decimal("0"))
+    batch = PaymentBatch(tenant_id=tenant_id, payroll_run_id=run.id, status=PaymentBatchStatus.PREPARED, total_amount=total, created_by_id=current_user.id)
+    db.add(batch)
+    await db.flush()
+
+    for p, emp in payable:
+        db.add(PaymentBatchItem(
+            tenant_id=tenant_id, batch_id=batch.id, payslip_id=p.id, employee_id=p.employee_id, amount=p.net_salary,
+            bank_name=emp.bank_name, bank_account_number=emp.bank_account_number,
+            bank_account_title=emp.bank_account_title, status=PaymentItemStatus.PENDING,
+        ))
+    await db.flush()
+
+    await _write_audit_log(db, tenant_id, current_user.id, "PAYMENT_BATCH_CREATED", "PayrollRun", run.id, new_value={"batch_id": str(batch.id), "total_amount": str(batch.total_amount), "skipped": len(skipped)})
+    return {
+        "id": str(batch.id), "payroll_run_id": str(run.id), "status": batch.status.value,
+        "total_amount": str(batch.total_amount), "item_count": len(payable), "skipped": skipped,
+    }
+
+
+@router.get("/payment-batches/{batch_id}", summary="Get a payment batch with its items")
+async def get_payment_batch(
+    batch_id: UUID,
+    current_user: User = Depends(require_permission("payroll.view")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from sqlalchemy.orm import selectinload
+
+    batch = (
+        await db.execute(
+            select(PaymentBatch).where(PaymentBatch.id == batch_id, PaymentBatch.tenant_id == tenant_id)
+            .options(selectinload(PaymentBatch.items))
+        )
+    ).scalar_one_or_none()
+    if batch is None:
+        raise NotFoundError("Payment batch not found")
+    return {
+        "id": str(batch.id), "payroll_run_id": str(batch.payroll_run_id), "status": batch.status.value,
+        "total_amount": str(batch.total_amount), "items": [_serialize_payment_item(i) for i in batch.items],
+    }
+
+
+@router.get("/payment-batches/{batch_id}/csv", summary="Download the bank-transfer file for a payment batch")
+async def download_payment_batch_csv(
+    batch_id: UUID,
+    current_user: User = Depends(require_permission("payroll.export")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    from sqlalchemy.orm import selectinload
+
+    batch = (
+        await db.execute(
+            select(PaymentBatch).where(PaymentBatch.id == batch_id, PaymentBatch.tenant_id == tenant_id)
+            .options(selectinload(PaymentBatch.items))
+        )
+    ).scalar_one_or_none()
+    if batch is None:
+        raise NotFoundError("Payment batch not found")
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Employee ID", "Bank Name", "Account Number", "Account Title", "Amount"])
+    for i in batch.items:
+        writer.writerow([
+            str(i.employee_id), _csv_text(i.bank_name), _csv_text(i.bank_account_number),
+            _csv_text(i.bank_account_title), str(i.amount),
+        ])
+
+    await _write_audit_log(db, tenant_id, current_user.id, "PAYMENT_FILE_DOWNLOADED", "PaymentBatch", batch.id)
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=payment-batch-{batch.id}.csv"},
+    )
+
+
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_text(value) -> str:
+    """A text cell that a spreadsheet will show as text (audit H-11). A
+    value starting with = + - @ is run as a FORMULA by Excel / Sheets — an
+    account title like '=HYPERLINK(...)' in the bank file could execute or
+    leak data when finance opens it. Prefixing ' keeps it plain text.
+    Numbers (amounts) are not passed through this."""
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(_FORMULA_START) else text
+
+
+class PaymentReconcile(BaseModel):
+    payment_reference: str | None = None
+    failure_reason: str | None = None
+
+
+async def _reconcilable_item(
+    db: AsyncSession, tenant_id: UUID, batch_id: UUID, item_id: UUID
+) -> tuple[PaymentBatch, PaymentBatchItem]:
+    """The batch and item to record a payment result on (audit H-11).
+    Refused once the payroll run is no longer live — money must never be
+    recorded against a cancelled or reopened run."""
+    batch = (
+        await db.execute(
+            select(PaymentBatch)
+            .where(PaymentBatch.id == batch_id, PaymentBatch.tenant_id == tenant_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if batch is None:
+        raise NotFoundError("Payment batch not found")
+    run = (await db.execute(select(PayrollRun).where(PayrollRun.id == batch.payroll_run_id))).scalar_one()
+    if run.status not in (PayrollRunStatus.APPROVED, PayrollRunStatus.LOCKED):
+        raise ConflictError(
+            f"This batch belongs to a payroll run that is {run.status.value} — "
+            "payments can no longer be recorded against it"
+        )
+    item = (
+        await db.execute(
+            select(PaymentBatchItem)
+            .where(PaymentBatchItem.id == item_id, PaymentBatchItem.batch_id == batch_id,
+                   PaymentBatchItem.tenant_id == tenant_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if item is None:
+        raise NotFoundError("Payment item not found")
+    return batch, item
+
+
+async def _refresh_batch_status(db: AsyncSession, batch: PaymentBatch) -> None:
+    """PREPARED → PROCESSING once results come in → COMPLETED when every
+    item is paid, FAILED when nothing is pending and some failed (a failed
+    item can still be retried and marked paid later)."""
+    await db.flush()
+    statuses = (
+        await db.execute(select(PaymentBatchItem.status).where(PaymentBatchItem.batch_id == batch.id))
+    ).scalars().all()
+    if statuses and all(s == PaymentItemStatus.PAID for s in statuses):
+        batch.status = PaymentBatchStatus.COMPLETED
+    elif PaymentItemStatus.PENDING in statuses:
+        resolved = any(s != PaymentItemStatus.PENDING for s in statuses)
+        batch.status = PaymentBatchStatus.PROCESSING if resolved else PaymentBatchStatus.PREPARED
+    else:
+        batch.status = PaymentBatchStatus.FAILED
+    await db.flush()
+
+
+# Recording that money moved is a finalizing act, not a download — these
+# used to need only payroll.export (audit H-11).
+@router.post("/payment-batches/{batch_id}/items/{item_id}/mark-paid", summary="Reconcile: mark one payment as completed")
+async def mark_payment_item_paid(
+    batch_id: UUID,
+    item_id: UUID,
+    body: PaymentReconcile,
+    current_user: User = Depends(require_permission("payroll.finalize")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """PENDING → PAID, or FAILED → PAID when a retry went through."""
+    batch, item = await _reconcilable_item(db, tenant_id, batch_id, item_id)
+    if item.status == PaymentItemStatus.PAID:
+        raise ConflictError("This payment is already recorded as paid")
+    item.status = PaymentItemStatus.PAID
+    item.payment_reference = body.payment_reference
+    item.failure_reason = None
+    item.paid_at = datetime.now(UTC)
+    payslip = (await db.execute(select(Payslip).where(Payslip.id == item.payslip_id))).scalar_one_or_none()
+    if payslip is not None:
+        payslip.status = PayslipStatus.PAID
+    await _refresh_batch_status(db, batch)
+    await _write_audit_log(db, tenant_id, current_user.id, "PAYMENT_MARKED_PAID", "PaymentBatchItem", item.id,
+                           new_value={"reference": body.payment_reference})
+    return _serialize_payment_item(item)
+
+
+@router.post("/payment-batches/{batch_id}/items/{item_id}/mark-failed", summary="Reconcile: mark one payment as failed")
+async def mark_payment_item_failed(
+    batch_id: UUID,
+    item_id: UUID,
+    body: PaymentReconcile,
+    current_user: User = Depends(require_permission("payroll.finalize")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """PENDING → FAILED. A paid transfer can't be turned into a failed one."""
+    batch, item = await _reconcilable_item(db, tenant_id, batch_id, item_id)
+    if item.status == PaymentItemStatus.PAID:
+        raise ConflictError("This payment is already recorded as paid — it can't be marked failed")
+    if item.status == PaymentItemStatus.FAILED:
+        raise ConflictError("This payment is already marked failed")
+    item.status = PaymentItemStatus.FAILED
+    item.failure_reason = body.failure_reason
+    await _refresh_batch_status(db, batch)
+    await _write_audit_log(db, tenant_id, current_user.id, "PAYMENT_MARKED_FAILED", "PaymentBatchItem", item.id,
+                           new_value={"reason": body.failure_reason})
+    return _serialize_payment_item(item)
+
+
+@router.get("/runs/{run_id}/register/csv", summary="Download the payroll register (full breakdown) as CSV")
+async def download_payroll_register_csv(
+    run_id: UUID,
+    current_user: User = Depends(require_permission("payroll.export")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    from sqlalchemy.orm import selectinload
+
+    run = (
+        await db.execute(
+            select(PayrollRun).where(PayrollRun.id == run_id, PayrollRun.tenant_id == tenant_id)
+            .options(selectinload(PayrollRun.payslips).selectinload(Payslip.lines))
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise NotFoundError("Payroll run not found")
+
+    employee_ids = [p.employee_id for p in run.payslips]
+    employees = (await db.execute(select(Employee).where(Employee.id.in_(employee_ids)))).scalars().all() if employee_ids else []
+    employee_map = {e.id: e for e in employees}
+    user_ids = [e.user_id for e in employees]
+    users = (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all() if user_ids else []
+    user_map = {u.id: u for u in users}
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Employee Code", "Employee Name", "Working Days", "Present Days", "Gross Salary", "Total Deductions", "Net Salary", "Status"])
+    for p in run.payslips:
+        emp = employee_map.get(p.employee_id)
+        user = user_map.get(emp.user_id) if emp else None
+        name = f"{user.first_name} {user.last_name}".strip() if user else (emp.employee_code if emp else "Unknown")
+        writer.writerow([
+            _csv_text(emp.employee_code if emp else ""), _csv_text(name), p.working_days, str(p.present_days),
+            str(p.gross_salary), str(p.total_deductions), str(p.net_salary), p.status.value,
+        ])
+
+    return StreamingResponse(
+        iter([buf.getvalue()]), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=payroll-register-{run.id}.csv"},
+    )
+
+
+@router.get("/dashboard", summary="Payroll dashboard summary")
+async def get_payroll_dashboard(
+    current_user: User = Depends(require_permission("payroll.view")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    latest_runs = (
+        await db.execute(
+            select(PayrollRun).where(PayrollRun.tenant_id == tenant_id, PayrollRun.is_deleted == False)  # noqa: E712
+            .order_by(PayrollRun.period_start.desc()).limit(6)
+        )
+    ).scalars().all()
+
+    pending_approvals = (
+        await db.execute(
+            select(func.count()).select_from(PayrollRun).where(
+                PayrollRun.tenant_id == tenant_id, PayrollRun.status == PayrollRunStatus.REVIEW,
+            )
+        )
+    ).scalar_one()
+
+    active_employees = (
+        await db.execute(
+            select(func.count()).select_from(EmployeeSalary).where(
+                EmployeeSalary.tenant_id == tenant_id, EmployeeSalary.is_current == True,  # noqa: E712
+            )
+        )
+    ).scalar_one()
+
+    current_run = latest_runs[0] if latest_runs else None
+    upcoming_pay_date = None
+    for r in latest_runs:
+        if r.status not in (PayrollRunStatus.PAID, PayrollRunStatus.CANCELLED) and r.pay_date >= date.today():
+            upcoming_pay_date = str(r.pay_date)
+            break
+
+    return {
+        "total_employees_on_payroll": active_employees,
+        "current_run": {
+            "id": str(current_run.id), "name": current_run.name, "status": current_run.status.value,
+            "total_gross": str(current_run.total_gross), "total_net": str(current_run.total_net),
+        } if current_run else None,
+        "pending_approvals": pending_approvals,
+        "upcoming_pay_date": upcoming_pay_date,
+        "cost_trend": [
+            {"run_name": r.name, "period_end": str(r.period_end), "total_gross": str(r.total_gross), "total_net": str(r.total_net), "employee_count": r.employee_count}
+            for r in reversed(latest_runs)
+        ],
+    }
