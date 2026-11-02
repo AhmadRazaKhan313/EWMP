@@ -17,11 +17,13 @@ from sqlalchemy import (
     Boolean,
     Date,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     JSON,
+    text,
     Enum as SAEnum,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -181,6 +183,12 @@ class Employee(TenantModel):
     nationality: Mapped[str | None] = mapped_column(String(100), nullable=True)
     blood_group: Mapped[str | None] = mapped_column(String(5), nullable=True)
 
+    # Family (Frappe-HR style "family background"). Plain names — no
+    # dependants/relationship tables, so they stay trivial to fill in.
+    father_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    mother_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    spouse_name: Mapped[str | None] = mapped_column(String(150), nullable=True)
+
     # ── Contact ───────────────────────────────────────────────────
     personal_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     work_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -188,7 +196,12 @@ class Employee(TenantModel):
     address: Mapped[dict | None] = mapped_column(
         JSON,
         nullable=True,
-        comment="Structured: street, city, state, postal_code, country",
+        comment="Current address. Structured: street, city, state, postal_code, country",
+    )
+    permanent_address: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Same shape as `address`",
     )
 
     # ── Identity documents ────────────────────────────────────────
@@ -197,6 +210,30 @@ class Employee(TenantModel):
     )
     passport_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     passport_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    driving_license_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    driving_license_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+    national_id_type: Mapped[str | None] = mapped_column(
+        String(30), nullable=True, comment="cnic | passport | ssn | nin | other"
+    )
+    tax_number: Mapped[str | None] = mapped_column(String(50), nullable=True, comment="NTN / TIN")
+    social_security_number: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, comment="EOBI / social security"
+    )
+    provident_fund_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    visa_number: Mapped[str | None] = mapped_column(String(50), nullable=True, comment="Visa / work permit")
+    visa_expiry: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    # ── More personal details ─────────────────────────────────────
+    religion: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    place_of_birth: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    home_phone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    previous_employee_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    referral_source: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    hobbies: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tshirt_size: Mapped[str | None] = mapped_column(String(5), nullable=True)
+    social_links: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True, comment="{linkedin, twitter, github, facebook, website}"
+    )
 
     # ── Banking ───────────────────────────────────────────────────
     bank_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -205,12 +242,47 @@ class Employee(TenantModel):
     )
     bank_routing_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     bank_account_title: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    bank_iban: Mapped[str | None] = mapped_column(String(34), nullable=True)
 
-    # ── Emergency contact ─────────────────────────────────────────
+    # ── Health insurance ──────────────────────────────────────────
+    health_insurance_provider: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    health_insurance_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    # ── Emergency contacts ────────────────────────────────────────
+    # `emergency_contacts` is the list (any number of people). The single
+    # `emergency_contact` dict is the legacy column: it is kept in step with
+    # the FIRST list entry so older readers (and old rows) keep working.
     emergency_contact: Mapped[dict | None] = mapped_column(
         JSON,
         nullable=True,
-        comment="name, relationship, phone, email",
+        comment="LEGACY single contact — mirrors emergency_contacts[0]",
+    )
+    emergency_contacts: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="[{name, relationship, phone, email, address}] — any number",
+    )
+
+    # ── Education & work history (Frappe HR "qualification" tables) ──
+    education: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, comment="[{degree, institute, year, grade}]"
+    )
+    work_experience: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, comment="[{company, designation, from_date, to_date, notes}]"
+    )
+    skills: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, comment="[{name, level: beginner|intermediate|expert}]"
+    )
+    languages: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, comment="[{name, fluency: basic|conversational|fluent|native}]"
+    )
+    certifications: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, comment="[{name, issued_by, issued_date, expiry_date}]"
+    )
+
+    # ── Dependents (OrangeHRM "Dependents") ───────────────────────
+    dependents: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, comment="[{name, relationship, date_of_birth}]"
     )
 
     # ── Compensation (snapshot — full history in salary_structures) ───
@@ -219,6 +291,13 @@ class Employee(TenantModel):
     )
     currency: Mapped[str] = mapped_column(
         String(3), default="USD", server_default="USD"
+    )
+    compensation_items: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Recurring extra pay lines on top of the salary structure: "
+        "[{id, name, kind: earning|deduction, calculation: fixed|percent_of_basic, "
+        "amount, percentage, is_taxable}]. Picked up by every payroll run.",
     )
 
     # ── Custom fields ─────────────────────────────────────────────
@@ -258,3 +337,64 @@ class Employee(TenantModel):
         from datetime import date as d
         delta = d.today() - self.date_of_joining
         return round(delta.days / 365.25, 1)
+
+
+# ── Status history (E-08) ───────────────────────────────────────────────────
+class EmployeeStatusHistory(TenantModel):
+    """One row each time an employee's employment status changes (hired,
+    confirmed, put on notice, offboarded, rehired ...). The detail page shows
+    these as a timeline."""
+
+    __tablename__ = "employee_status_history"
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    changed_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="update", server_default="update",
+        comment="created | update | offboard | import",
+    )
+
+
+# ── Contracts (E-07) ────────────────────────────────────────────────────────
+CONTRACT_TYPES = ("permanent", "fixed_term", "probation", "internship", "consultant")
+CONTRACT_STATUSES = ("active", "renewed", "terminated")
+
+
+class EmployeeContract(TenantModel):
+    """An employment contract: type, term, renewal alert and the signed file.
+
+    `status` is what HR decided (active / renewed / terminated). Whether an
+    active contract is *expiring* or *expired* is worked out from end_date,
+    never stored, so it can't go stale."""
+
+    __tablename__ = "employee_contracts"
+    __table_args__ = (
+        Index(
+            "uq_employee_contracts_one_active", "employee_id",
+            unique=True, postgresql_where=text("status = 'active' AND is_deleted = false"),
+        ),
+    )
+
+    employee_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    contract_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True, index=True, comment="NULL for a permanent contract"
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active", server_default="active", index=True)
+    renewal_alert_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30, server_default="30")
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("employee_documents.id", ondelete="SET NULL"), nullable=True,
+        comment="The signed contract, uploaded under the employee's Documents",
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_alerted_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    renewed_from_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)

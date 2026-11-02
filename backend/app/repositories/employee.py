@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, joinedload
 
 from app.models.employee import Employee, EmploymentStatus
+from app.models.user import User
 from app.repositories.base import BaseRepository
 
 
@@ -77,11 +78,23 @@ class EmployeeRepository(BaseRepository[Employee]):
         ]
 
         if query:
-            q = f"%{query.lower()}%"
+            # Match what people actually type: name, email, code or phone. The
+            # name/email live on the linked user, so match through a subquery.
+            q = f"%{query.strip().lower()}%"
+            user_ids = select(User.id).where(
+                User.organization_id == self.tenant_id,
+                or_(
+                    func.lower(User.first_name).like(q),
+                    func.lower(User.last_name).like(q),
+                    func.lower(User.first_name + " " + User.last_name).like(q),
+                    func.lower(User.email).like(q),
+                ),
+            )
             filters.append(
                 or_(
                     func.lower(Employee.employee_code).like(q),
                     Employee.work_phone.like(q),
+                    Employee.user_id.in_(user_ids),
                 )
             )
 

@@ -8,11 +8,13 @@ Separate schemas for:
   - ListItem (minimal fields for table rows — fast to serialize)
 """
 
+import uuid as _uuid
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 from app.models.employee import (
     EmploymentStatus,
@@ -23,8 +25,232 @@ from app.models.employee import (
 )
 
 
+# ── Repeating profile sections ───────────────────────────────────────────────
+# These are stored as JSON lists on the employee row. Each entry is validated
+# here and written back as plain JSON (amounts as strings), so nothing
+# non-serialisable ever reaches the JSON column.
+MAX_EMERGENCY_CONTACTS = 20
+MAX_PAY_ITEMS = 50
+MAX_HISTORY_ROWS = 30
+
+
+class EmergencyContactIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=150)
+    relationship: str | None = Field(None, max_length=50)
+    phone: str | None = Field(None, max_length=50)
+    email: str | None = Field(None, max_length=255)
+    address: str | None = Field(None, max_length=500)
+
+    model_config = {"extra": "ignore"}
+
+
+class EducationIn(BaseModel):
+    degree: str = Field(..., min_length=1, max_length=150)
+    institute: str | None = Field(None, max_length=200)
+    year: str | None = Field(None, max_length=10)
+    grade: str | None = Field(None, max_length=50)
+
+    model_config = {"extra": "ignore"}
+
+
+class WorkExperienceIn(BaseModel):
+    company: str = Field(..., min_length=1, max_length=200)
+    designation: str | None = Field(None, max_length=150)
+    from_date: date | None = None
+    to_date: date | None = None
+    notes: str | None = Field(None, max_length=500)
+
+    model_config = {"extra": "ignore"}
+
+
+class DependentIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=150)
+    relationship: str | None = Field(None, max_length=50)
+    date_of_birth: date | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+class SkillIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    level: Literal["beginner", "intermediate", "expert"] | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+class LanguageIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    fluency: Literal["basic", "conversational", "fluent", "native"] | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+class CertificationIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    issued_by: str | None = Field(None, max_length=200)
+    issued_date: date | None = None
+    expiry_date: date | None = None
+
+    model_config = {"extra": "ignore"}
+
+
+class CompensationItemIn(BaseModel):
+    """One recurring extra pay line (e.g. Medical, Fuel, Loan EMI, Tax adj.)."""
+
+    id: str | None = Field(None, max_length=40)
+    name: str = Field(..., min_length=1, max_length=100)
+    kind: Literal["earning", "deduction"]
+    calculation: Literal["fixed", "percent_of_basic"] = "fixed"
+    amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=12, decimal_places=2)
+    percentage: Decimal = Field(default=Decimal("0"), ge=0, le=100, max_digits=7, decimal_places=4)
+    is_taxable: bool = True
+    # recurring: applied in every payroll period that overlaps effective_from..effective_to
+    # (either end may be open). one_time: applied only in the period containing effective_from.
+    frequency: Literal["recurring", "one_time"] = "recurring"
+    effective_from: date | None = None
+    effective_to: date | None = None
+
+    model_config = {"extra": "ignore"}
+
+    @model_validator(mode="after")
+    def _check_dates(self):
+        if self.frequency == "one_time":
+            if self.effective_from is None:
+                raise ValueError("A one-time pay item needs the date it applies on")
+            self.effective_to = None
+        elif self.effective_from and self.effective_to and self.effective_to < self.effective_from:
+            raise ValueError("effective_to cannot be before effective_from")
+        return self
+
+
+def _normalise(model: type[BaseModel], rows: list | None, limit: int, label: str):
+    if rows is None:
+        return None
+    if len(rows) > limit:
+        raise ValueError(f"At most {limit} {label} are allowed")
+    out = []
+    for row in rows:
+        item = model.model_validate(row)
+        dumped = item.model_dump(mode="json")
+        if isinstance(item, CompensationItemIn):
+            # Keep the unused figure at zero so what is stored matches what
+            # payroll will actually use.
+            if item.calculation == "fixed":
+                dumped["percentage"] = "0"
+            else:
+                dumped["amount"] = "0"
+            dumped["id"] = item.id or _uuid.uuid4().hex[:12]
+        out.append(dumped)
+    return out
+
+
+class _ProfileSectionsMixin(BaseModel):
+    """Validators shared by the create and update schemas."""
+
+    @field_validator("emergency_contacts", check_fields=False)
+    @classmethod
+    def _v_contacts(cls, v):
+        return _normalise(EmergencyContactIn, v, MAX_EMERGENCY_CONTACTS, "emergency contacts")
+
+    @field_validator("education", check_fields=False)
+    @classmethod
+    def _v_education(cls, v):
+        return _normalise(EducationIn, v, MAX_HISTORY_ROWS, "education rows")
+
+    @field_validator("work_experience", check_fields=False)
+    @classmethod
+    def _v_experience(cls, v):
+        return _normalise(WorkExperienceIn, v, MAX_HISTORY_ROWS, "work experience rows")
+
+    @field_validator("dependents", check_fields=False)
+    @classmethod
+    def _v_dependents(cls, v):
+        return _normalise(DependentIn, v, MAX_HISTORY_ROWS, "dependents")
+
+    @field_validator("skills", check_fields=False)
+    @classmethod
+    def _v_skills(cls, v):
+        return _normalise(SkillIn, v, 60, "skills")
+
+    @field_validator("languages", check_fields=False)
+    @classmethod
+    def _v_languages(cls, v):
+        return _normalise(LanguageIn, v, 30, "languages")
+
+    @field_validator("certifications", check_fields=False)
+    @classmethod
+    def _v_certifications(cls, v):
+        return _normalise(CertificationIn, v, MAX_HISTORY_ROWS, "certifications")
+
+    @field_validator("compensation_items", check_fields=False)
+    @classmethod
+    def _v_items(cls, v):
+        return _normalise(CompensationItemIn, v, MAX_PAY_ITEMS, "pay items")
+
+
+# Fields accepted by BOTH create and update (so "Add" saves exactly what "Edit"
+# does — create used to drop nationality, blood group and the emergency contact
+# silently). Declared once and attached to each schema below.
+class _ProfileFields(_ProfileSectionsMixin):
+    marital_status: MaritalStatus | None = None
+    nationality: str | None = Field(None, max_length=100)
+    blood_group: str | None = Field(None, max_length=5)
+    father_name: str | None = Field(None, max_length=150)
+    mother_name: str | None = Field(None, max_length=150)
+    spouse_name: str | None = Field(None, max_length=150)
+
+    personal_email: EmailStr | None = None
+    personal_phone: str | None = Field(None, max_length=50)
+    address: dict | None = None
+    permanent_address: dict | None = None
+
+    national_id: str | None = Field(None, max_length=50)
+    passport_number: str | None = Field(None, max_length=50)
+    passport_expiry: date | None = None
+    driving_license_number: str | None = Field(None, max_length=50)
+    driving_license_expiry: date | None = None
+    national_id_type: str | None = Field(None, max_length=30)
+    tax_number: str | None = Field(None, max_length=50)
+    social_security_number: str | None = Field(None, max_length=50)
+    provident_fund_number: str | None = Field(None, max_length=50)
+    visa_number: str | None = Field(None, max_length=50)
+    visa_expiry: date | None = None
+
+    religion: str | None = Field(None, max_length=50)
+    place_of_birth: str | None = Field(None, max_length=100)
+    home_phone: str | None = Field(None, max_length=50)
+    previous_employee_id: str | None = Field(None, max_length=50)
+    referral_source: str | None = Field(None, max_length=100)
+    hobbies: str | None = Field(None, max_length=2000)
+    tshirt_size: str | None = Field(None, max_length=5)
+    social_links: dict[str, str] | None = None
+
+    # Employment details the form now exposes (they existed on the model but
+    # could not be set from the API on create).
+    date_of_confirmation: date | None = None
+    probation_end_date: date | None = None
+    notice_period_days: int | None = Field(None, ge=0, le=365)
+
+    bank_name: str | None = Field(None, max_length=100)
+    bank_account_title: str | None = Field(None, max_length=100)
+    bank_account_number: str | None = Field(None, max_length=50)
+    bank_iban: str | None = Field(None, max_length=34)
+
+    health_insurance_provider: str | None = Field(None, max_length=150)
+    health_insurance_number: str | None = Field(None, max_length=80)
+
+    emergency_contacts: list[dict] | None = None
+    education: list[dict] | None = None
+    work_experience: list[dict] | None = None
+    dependents: list[dict] | None = None
+    skills: list[dict] | None = None
+    languages: list[dict] | None = None
+    certifications: list[dict] | None = None
+    compensation_items: list[dict] | None = None
+
+
 # ── Create ────────────────────────────────────────────────────────────────────
-class EmployeeCreateSchema(BaseModel):
+class EmployeeCreateSchema(_ProfileFields):
     # Required — used to create the linked User account atomically.
     # If user_id is provided, that existing user is linked instead of creating
     # a new one (first_name/last_name/email are then ignored for User creation).
@@ -70,7 +296,7 @@ class EmployeeCreateSchema(BaseModel):
 
 
 # ── Update ────────────────────────────────────────────────────────────────────
-class EmployeeUpdateSchema(BaseModel):
+class EmployeeUpdateSchema(_ProfileFields):
     # first_name/last_name live on the linked User, not on Employee.
     # The service layer splits these out and updates User separately —
     # they must NOT be passed straight into the Employee repo.update().
@@ -96,27 +322,10 @@ class EmployeeUpdateSchema(BaseModel):
 
     date_of_birth: date | None = None
     gender: Gender | None = None
-    marital_status: MaritalStatus | None = None
-    nationality: str | None = None
-    blood_group: str | None = None
-
-    personal_email: EmailStr | None = None
     work_phone: str | None = None
-    personal_phone: str | None = None
-    address: dict | None = None
-
-    national_id: str | None = None
-    passport_number: str | None = None
-    passport_expiry: date | None = None
-
-    bank_name: str | None = None
-    bank_account_number: str | None = None
-    bank_account_title: str | None = None
-
     emergency_contact: dict | None = None
     work_location: str | None = None
     is_remote: bool | None = None
-    notice_period_days: int | None = None
 
     current_salary: Decimal | None = None
     currency: str | None = Field(None, max_length=3)
