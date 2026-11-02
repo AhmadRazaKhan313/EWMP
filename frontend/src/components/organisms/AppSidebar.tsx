@@ -18,177 +18,31 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import {
-  BarChart3, Bot, Building2, CalendarDays, ChevronDown, ChevronsUpDown,
-  CreditCard, DollarSign, Headphones, LayoutDashboard, LogOut,
-  Monitor, Package, Plane, Settings, Shield, Store, TrendingUp,
-  User as UserIcon, UserSearch, Users, Workflow,
-  type LucideIcon,
-} from "lucide-react";
+import { ChevronDown, ChevronsUpDown, LogOut, User as UserIcon } from "lucide-react";
 import { cn } from "@/utils/cn";
 import { useAuthStore } from "@/store/auth.store";
+import { BrandMark } from "@/components/organization/BrandMark";
 
-interface NavItem {
-  label: string;
-  href: string;
-  /** Top-level rows have an icon; sub-items under a group do not. */
-  icon?: LucideIcon;
-  permission?: string;
-  /** Visible if the user has ANY one of these — used for sections that have
-   * both a manager-level and a self-service permission tier (e.g. Attendance:
-   * "attendance.view" sees everyone, "attendance.view_own" sees only your
-   * own). Checked in addition to `permission`, not instead of it. */
-  anyPermission?: string[];
-  platformAdminOnly?: boolean;
-  badge?: string | number;
-  children?: NavItem[];
-}
+import {
+  NAV_SECTIONS, filterSections, matchLength,
+  type NavItem,
+} from "@/config/navigation";
 
-interface NavSection {
-  label: string;
-  items: NavItem[];
-}
+// The sidebar shows everyday pages only. Set-up / management pages (Departments,
+// Shifts, Leave Types, Assets ...) live under Settings -> Management; the list of
+// both is in "@/config/navigation".
 
-const NAV_SECTIONS: NavSection[] = [
-  {
-    label: "General",
-    items: [
-      { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-      { label: "Employees", href: "/employees", icon: Users, permission: "employees.view" },
-      {
-        label: "Organization", href: "/departments", icon: Building2,
-        children: [
-          { label: "Departments",  href: "/departments",  permission: "departments.view" },
-          { label: "Branches",     href: "/branches",     permission: "branches.manage" },
-          { label: "Teams",        href: "/teams",        permission: "teams.manage" },
-          { label: "Designations", href: "/designations", permission: "designations.manage" },
-        ],
-      },
-      {
-        label: "Attendance", href: "/attendance", icon: CalendarDays, permission: "attendance.view",
-        anyPermission: ["attendance.view", "attendance.view_own"],
-        children: [
-          { label: "Daily Attendance", href: "/attendance", anyPermission: ["attendance.view", "attendance.view_own"] },
-          { label: "Shifts",           href: "/shifts",     permission: "attendance.view" },
-        ],
-      },
-      {
-        label: "Leave", href: "/leave", icon: Plane, permission: "leave.view",
-        anyPermission: ["leave.view", "leave.apply"],
-        children: [
-          { label: "Leave Requests", href: "/leave",       anyPermission: ["leave.view", "leave.apply"] },
-          { label: "Leave Types",    href: "/leave-types", permission: "leave.manage_types" },
-        ],
-      },
-    ],
-  },
-  {
-    label: "Operations",
-    items: [
-      { label: "Payroll",     href: "/payroll",     icon: DollarSign, permission: "payroll.view" },
-      { label: "Recruitment", href: "/recruitment", icon: UserSearch, permission: "recruitment.view" },
-      { label: "Performance", href: "/performance", icon: TrendingUp, permission: "performance.view" },
-      {
-        label: "Devices", href: "/devices", icon: Monitor, permission: "devices.view",
-        anyPermission: ["devices.view", "devices.view_alerts"],
-        children: [
-          { label: "All Devices",     href: "/devices",        permission: "devices.view" },
-          { label: "Activity Alerts", href: "/devices/alerts", permission: "devices.view_alerts" },
-        ],
-      },
-      { label: "Assets",   href: "/assets",   icon: Package,    permission: "assets.view" },
-      { label: "Helpdesk", href: "/helpdesk", icon: Headphones, permission: "helpdesk.view" },
-    ],
-  },
-  {
-    label: "Tools",
-    items: [
-      { label: "Reports",      href: "/reports",          icon: BarChart3, permission: "reports.view" },
-      { label: "AI Assistant", href: "/ai-assistant",     icon: Bot },
-      { label: "Workflows",    href: "/workflow-builder", icon: Workflow,  permission: "workflows.view" },
-      { label: "Marketplace",  href: "/marketplace",      icon: Store },
-    ],
-  },
-  {
-    label: "Admin",
-    items: [
-      { label: "Billing",       href: "/billing",     icon: CreditCard, permission: "billing.view" },
-      { label: "Settings",      href: "/settings",    icon: Settings,   permission: "settings.view" },
-      { label: "Organizations", href: "/admin-setup", icon: Shield,     platformAdminOnly: true },
-    ],
-  },
-];
-
-/**
- * Whether a single nav item (no children considered) is allowed for the
- * current user: platform-admin-only items need is_platform_admin; items
- * with no `permission` set are open to any authenticated user (matches
- * backend routes that only require get_current_user, e.g. org-structure
- * browsing, AI Assistant, Marketplace); everything else needs the
- * matching permission from the user's assigned role, or platform-admin
- * owner-bypass.
- */
-function itemAllowed(
-  item: NavItem,
-  hasPermission: (permission: string) => boolean,
-  isPlatformAdmin: boolean,
-): boolean {
-  if (item.platformAdminOnly) return isPlatformAdmin;
-  if (!item.permission && !item.anyPermission) return true;
-  if (isPlatformAdmin) return true;
-  if (item.permission && hasPermission(item.permission)) return true;
-  if (item.anyPermission && item.anyPermission.some(p => hasPermission(p))) return true;
-  return false;
-}
-
-/**
- * Filters nav items down to what this user's role actually permits.
- * Children are filtered independently of their parent, so e.g. a role with
- * "leave.view" but not "leave.manage_types" sees "Leave Requests" but not
- * "Leave Types". A group whose parent permission check passes but ends up
- * with zero visible children is dropped entirely rather than showing an empty
- * expandable header.
- */
-function filterNavItems(
-  items: NavItem[],
-  hasPermission: (permission: string) => boolean,
-  isPlatformAdmin: boolean,
-): NavItem[] {
-  const result: NavItem[] = [];
-  for (const item of items) {
-    if (!itemAllowed(item, hasPermission, isPlatformAdmin)) continue;
-
-    if (item.children && item.children.length > 0) {
-      const visibleChildren = filterNavItems(item.children, hasPermission, isPlatformAdmin);
-      if (visibleChildren.length > 0) {
-        result.push({ ...item, children: visibleChildren });
-      }
-      continue;
-    }
-
-    result.push(item);
-  }
-  return result;
-}
-
-/** Sections with their items filtered; a section with nothing left is hidden. */
-function filterSections(
-  sections: NavSection[],
-  hasPermission: (permission: string) => boolean,
-  isPlatformAdmin: boolean,
-): NavSection[] {
-  return sections
-    .map(s => ({ ...s, items: filterNavItems(s.items, hasPermission, isPlatformAdmin) }))
-    .filter(s => s.items.length > 0);
-}
-
-/** The one sub-item that is "current": the longest matching href among siblings,
- * so /devices/alerts highlights Activity Alerts but not also All Devices. */
+/** The one sub-item that is "current": the most specific match among siblings,
+ * so /devices/alerts highlights Activity Alerts but not also All Devices, and
+ * /departments highlights Settings -> Management. */
 function currentChildHref(children: NavItem[], pathname: string): string | null {
-  const matches = children
-    .filter(c => pathname === c.href || pathname.startsWith(c.href + "/"))
-    .sort((a, b) => b.href.length - a.href.length);
-  return matches[0]?.href ?? null;
+  let best: NavItem | null = null;
+  let bestLen = 0;
+  for (const c of children) {
+    const len = matchLength(c, pathname);
+    if (len > bestLen) { best = c; bestLen = len; }
+  }
+  return best?.href ?? null;
 }
 
 // ── Shared row styling ────────────────────────────────────────────────────────
@@ -232,15 +86,8 @@ export function AppSidebar() {
 
   return (
     <aside className="flex h-dvh w-[272px] shrink-0 flex-col border-r border-[hsl(var(--sidebar-border))] bg-[hsl(var(--sidebar-background))]">
-      {/* Brand */}
-      <div className="flex items-center gap-2 px-5 pb-5 pt-5">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--sidebar-border))] bg-[hsl(var(--background))] shadow-[var(--shadow-xs)]">
-          <Shield size={18} strokeWidth={2} className="text-[hsl(var(--primary))]" />
-        </div>
-        <span className="font-heading text-xl font-bold leading-8 tracking-tight text-[hsl(var(--foreground))]">
-          EWMP
-        </span>
-      </div>
+      {/* Brand: the organization's logo, else the EWMP mark */}
+      <BrandMark />
 
       {/* Navigation */}
       <nav aria-label="Main" className="sidebar-scroll flex-1 overflow-y-auto px-4 pb-4">

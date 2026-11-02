@@ -43,7 +43,7 @@ describe("AppSidebar — who sees what", () => {
     expect(link("Employees")).toBeInTheDocument();
     expect(link("AI Assistant")).toBeInTheDocument();         // open to everyone
     expect(link("Payroll")).not.toBeInTheDocument();
-    expect(link("Settings")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Settings" })).not.toBeInTheDocument();
     expect(link("Billing")).not.toBeInTheDocument();
   });
 
@@ -61,7 +61,7 @@ describe("AppSidebar — who sees what", () => {
     render(<AppSidebar />);
     for (const s of ["General", "Operations", "Tools", "Admin"]) expect(screen.getByText(s)).toBeInTheDocument();
     expect(link("Payroll")).toBeInTheDocument();
-    expect(link("Settings")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
     expect(link("Organizations")).not.toBeInTheDocument();
   });
 
@@ -72,12 +72,30 @@ describe("AppSidebar — who sees what", () => {
   });
 
   it("a group is dropped when none of its children are allowed", () => {
-    signIn({ permissions: ["leave.apply"] });   // sees Leave Requests, not Leave Types
+    signIn({ permissions: ["leave.apply"] });   // sees Leave, but no Devices group
     pathnameMock.mockReturnValue("/leave");
     render(<AppSidebar />);
-    expect(link("Leave Requests")).toBeInTheDocument();
-    expect(link("Leave Types")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Organization/ })).not.toBeInTheDocument();
+    expect(link("Leave")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Devices/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Settings/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps management pages OUT of the sidebar (they live under Settings -> Management)", () => {
+    signIn({ has_full_access: true });
+    render(<AppSidebar />);
+    for (const gone of ["Departments", "Branches", "Teams", "Designations", "Shifts", "Leave Types", "Assets", "Recruitment"]) {
+      expect(link(gone)).not.toBeInTheDocument();
+    }
+    expect(screen.queryByRole("button", { name: "Organization" })).not.toBeInTheDocument();
+  });
+
+  it("someone who can manage only departments still gets Settings -> Management", async () => {
+    signIn({ permissions: ["departments.view"] });
+    render(<AppSidebar />);
+    const settings = screen.getByRole("button", { name: "Settings" });
+    await userEvent.click(settings);
+    expect(link("Management")).toHaveAttribute("href", "/settings/management");
+    expect(link("General")).not.toBeInTheDocument();      // no settings.view
   });
 });
 
@@ -102,12 +120,26 @@ describe("AppSidebar — the current page", () => {
   it("keeps other groups closed until they are opened by hand", async () => {
     pathnameMock.mockReturnValue("/dashboard");
     render(<AppSidebar />);
-    expect(link("Shifts")).not.toBeInTheDocument();
-    const attendance = screen.getByRole("button", { name: "Attendance" });
-    expect(attendance).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(attendance);
-    expect(attendance).toHaveAttribute("aria-expanded", "true");
-    expect(link("Shifts")).toBeInTheDocument();
+    expect(link("Activity Alerts")).not.toBeInTheDocument();
+    const devices = screen.getByRole("button", { name: "Devices" });
+    expect(devices).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(devices);
+    expect(devices).toHaveAttribute("aria-expanded", "true");
+    expect(link("Activity Alerts")).toBeInTheDocument();
+  });
+
+  it("lights up Settings -> Management while on a management page like /departments", () => {
+    pathnameMock.mockReturnValue("/departments");
+    render(<AppSidebar />);
+    expect(link("Management")).toHaveAttribute("aria-current", "page");
+    expect(link("General")).not.toHaveAttribute("aria-current");
+  });
+
+  it("on /settings the General row is current, not Management", () => {
+    pathnameMock.mockReturnValue("/settings");
+    render(<AppSidebar />);
+    expect(link("General")).toHaveAttribute("aria-current", "page");
+    expect(link("Management")).not.toHaveAttribute("aria-current");
   });
 });
 
