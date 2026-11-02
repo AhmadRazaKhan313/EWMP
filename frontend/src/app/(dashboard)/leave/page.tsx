@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Plane, Check, X, Filter, Plus } from "lucide-react";
+import { Plane, Check, X, Filter, Plus, Ban } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import apiClient from "@/services/api-client";
@@ -37,13 +37,39 @@ export default function LeavePage() {
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<string>("pending");
   const [applyOpen, setApplyOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [leaveTypeId, setLeaveTypeId] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const activeFilters = [leaveTypeId, dateFrom, dateTo].filter(Boolean).length;
+  const todayIso = (() => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  })();
+
+  const { data: leaveTypes } = useQuery({
+    queryKey: ["leave-types"],
+    enabled: filtersOpen,
+    queryFn: async () => {
+      const { data } = await apiClient.get<{ items: { id: string; name: string }[] }>("/leave/types");
+      return data.items ?? [];
+    },
+  });
 
   const { data, isLoading } = useQuery({
-    queryKey: ["leave-requests", statusFilter],
+    queryKey: ["leave-requests", statusFilter, leaveTypeId, dateFrom, dateTo],
     queryFn: async () => {
       const { data } = await apiClient.get<{ items: LeaveRequest[]; total: number }>(
         "/leave/requests",
-        { params: { status: statusFilter || undefined } },
+        {
+          params: {
+            status: statusFilter || undefined,
+            leave_type_id: leaveTypeId || undefined,
+            date_from: dateFrom || undefined,
+            date_to: dateTo || undefined,
+          },
+        },
       );
       return data;
     },
@@ -63,6 +89,15 @@ export default function LeavePage() {
       toast.success("Leave rejected");
       void qc.invalidateQueries({ queryKey: ["leave-requests"] });
     },
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) => apiClient.post(`/leave/requests/${id}/cancel`),
+    onSuccess: () => {
+      toast.success("Leave request cancelled");
+      void qc.invalidateQueries({ queryKey: ["leave-requests"] });
+    },
+    onError: () => toast.error("Could not cancel this request"),
   });
 
   const columns: ColumnDef<LeaveRequest, unknown>[] = [
@@ -122,9 +157,12 @@ export default function LeavePage() {
       header: "",
       cell: ({ row }) => {
         const req = row.original;
-        if (req.status !== "pending") return null;
+        const canCancel =
+          req.status === "pending" || (req.status === "approved" && req.start_date.slice(0, 10) >= todayIso);
+        if (req.status !== "pending" && !canCancel) return null;
         return (
           <div className="flex items-center gap-1.5">
+            {req.status === "pending" && (<>
             <button
               onClick={(e) => { e.stopPropagation(); approveMutation.mutate(req.id); }}
               className="flex h-7 w-7 items-center justify-center rounded-md bg-[hsl(var(--status-active-bg))] text-[hsl(var(--status-active-fg))] transition-colors hover:opacity-80"
@@ -139,10 +177,21 @@ export default function LeavePage() {
             >
               <X size={14} />
             </button>
+            </>)}
+            {canCancel && (
+              <button
+                onClick={(e) => { e.stopPropagation(); cancelMutation.mutate(req.id); }}
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-[hsl(var(--border-strong))] text-[hsl(var(--foreground-subtle))] transition-colors hover:bg-[hsl(var(--background-subtle))]"
+                title="Cancel request"
+                aria-label="Cancel request"
+              >
+                <Ban size={14} />
+              </button>
+            )}
           </div>
         );
       },
-      size: 80,
+      size: 110,
     },
   ];
 
@@ -155,14 +204,62 @@ export default function LeavePage() {
         title="Leave Management"
         description="Review and manage employee leave requests."
         action={
-          <>
-            <Button variant="outline" icon={<Filter size={14} />}>Filter</Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" icon={<Filter size={14} />} onClick={() => setFiltersOpen((o) => !o)}>
+              {`Filter${activeFilters ? ` (${activeFilters})` : ""}`}
+            </Button>
             <Button icon={<Plus size={14} />} onClick={() => setApplyOpen(true)}>Apply for Leave</Button>
-          </>
+          </div>
         }
       />
 
       <ApplyLeaveModal open={applyOpen} onClose={() => setApplyOpen(false)} />
+
+      {filtersOpen && (
+        <div
+          data-testid="leave-filters"
+          className="flex flex-wrap items-end gap-4 rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] p-4"
+        >
+          <label className="flex flex-col gap-1 text-sm font-medium">
+            Leave type
+            <select
+              value={leaveTypeId}
+              onChange={(e) => setLeaveTypeId(e.target.value)}
+              className="h-10 min-w-[180px] rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3 text-sm"
+            >
+              <option value="">All types</option>
+              {(leaveTypes ?? []).map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-sm font-medium">
+            From date
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="h-10 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3 text-sm"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm font-medium">
+            To date
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="h-10 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3 text-sm"
+            />
+          </label>
+          <Button
+            variant="outline"
+            disabled={!activeFilters}
+            onClick={() => { setLeaveTypeId(""); setDateFrom(""); setDateTo(""); }}
+          >
+            Clear filters
+          </Button>
+        </div>
+      )}
 
       {/* Status filter — the shared segmented-tab pattern, per the Figma design */}
       <Tabs

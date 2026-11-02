@@ -1,6 +1,5 @@
 "use client";
 
-import { apiErrorText } from "@/utils/api-error";
 import { forwardRef, useEffect } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -112,9 +111,12 @@ interface BalanceItem {
 interface ApplyLeaveModalProps {
   open: boolean;
   onClose: () => void;
+  /** "modal" (default) floats over the page; "page" lays the same form out in the page flow. */
+  variant?: "modal" | "page";
 }
 
-export function ApplyLeaveModal({ open, onClose }: ApplyLeaveModalProps) {
+export function ApplyLeaveModal({ open, onClose, variant = "modal" }: ApplyLeaveModalProps) {
+  const isPage = variant === "page";
   const qc = useQueryClient();
 
   const { data: leaveTypes } = useQuery({
@@ -158,7 +160,8 @@ export function ApplyLeaveModal({ open, onClose }: ApplyLeaveModalProps) {
       onClose();
     },
     onError: (err: unknown) => {
-      toast.error(apiErrorText(err, "Couldn't submit leave request"));
+      const msg = (err as { response?: { data?: { message?: string; detail?: string } } })?.response?.data;
+      toast.error(msg?.message || msg?.detail || "Couldn't submit leave request");
     },
   });
 
@@ -182,8 +185,10 @@ export function ApplyLeaveModal({ open, onClose }: ApplyLeaveModalProps) {
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-[hsl(var(--background))] shadow-2xl">
+      {!isPage && <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />}
+      <div className={isPage
+        ? "w-full max-w-2xl rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] shadow-[var(--shadow-xs)]"
+        : "fixed left-1/2 top-1/2 z-50 w-full max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl bg-[hsl(var(--background))] shadow-2xl"}>
         <div className="flex items-center justify-between border-b border-[hsl(var(--border))] px-6 py-4">
           <div className="flex items-center gap-2">
             <CalendarDays size={16} className="text-[hsl(var(--primary))]" />
