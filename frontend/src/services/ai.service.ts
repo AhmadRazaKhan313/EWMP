@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import apiClient from "./api-client";
 
-export type AIProvider = "openai" | "anthropic" | "google" | "ollama";
+export type AIProvider = "openai" | "anthropic" | "google" | "groq" | "openrouter" | "ollama";
 
 export interface AIConfig {
   provider: AIProvider;

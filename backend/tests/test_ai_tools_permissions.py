@@ -220,7 +220,7 @@ class TestChatEndpoint:
 
         req = chat_module.ChatRequest(message="hello", history=[])
         await chat_module.chat(req, _user("leave.view"), TENANT, None)
-        assert captured["allowed_tools"] == frozenset({"get_leave_summary"})
+        assert captured["allowed_tools"] == frozenset({"get_leave_summary", "get_leave_cancellations"})
 
         await chat_module.chat(req, _user(), TENANT, None)
         assert captured["allowed_tools"] == frozenset()

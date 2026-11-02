@@ -36,6 +36,8 @@ def _platform_default_key(provider: str) -> str | None:
         "openai": settings.OPENAI_API_KEY,
         "anthropic": settings.ANTHROPIC_API_KEY,
         "google": settings.GOOGLE_AI_API_KEY,
+        "groq": settings.GROQ_API_KEY,
+        "openrouter": settings.OPENROUTER_API_KEY,
         "ollama": None,  # local — no key needed
     }.get(provider) or None
 

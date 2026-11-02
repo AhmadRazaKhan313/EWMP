@@ -12,6 +12,7 @@ employee rows) — the assistant should never be able to dump a full PII
 table through a tool call.
 """
 
+import logging
 from datetime import timedelta
 from uuid import UUID
 
@@ -24,6 +25,10 @@ from app.models.attendance import AttendanceRecord, AttendanceStatus, LeaveReque
 from app.models.employee import Employee, EmploymentStatus
 from app.models.organization_structure import Department
 from app.models.payroll import PayrollRun
+
+logger = logging.getLogger(__name__)
+
+MAX_LISTED_PEOPLE = 50  # a list tool never returns more names than this
 
 
 async def get_headcount_summary(db: AsyncSession, tenant_id: UUID) -> dict:
@@ -157,6 +162,97 @@ async def get_payroll_summary(db: AsyncSession, tenant_id: UUID) -> dict:
     }
 
 
+async def get_absent_today(db: AsyncSession, tenant_id: UUID) -> dict:
+    """Who is absent today, using the same rules as the daily attendance sheet
+    (shifts, holidays and approved leave are respected). Names are capped."""
+    from app.services.attendance_daily import DayStatus, build_daily_sheet, summarize
+
+    day, rows = await build_daily_sheet(db, tenant_id)
+    absent = [r for r in rows if r.status == DayStatus.ABSENT]
+    counts = summarize(rows)
+    return {
+        "date": str(day),
+        "absent_count": len(absent),
+        "on_leave_count": counts.get("on_leave", 0),
+        "absent": [
+            {"name": r.employee_name, "department": r.department_name, "shift": r.shift_name}
+            for r in absent[:MAX_LISTED_PEOPLE]
+        ],
+        "truncated": len(absent) > MAX_LISTED_PEOPLE,
+    }
+
+
+async def get_leave_cancellations(db: AsyncSession, tenant_id: UUID, days: int = 30) -> dict:
+    """Leave requests cancelled by the employee or revoked by HR in the window."""
+    cutoff = local_today(await org_zone(db, tenant_id)) - timedelta(days=days)
+    rows = (
+        await db.execute(
+            select(LeaveRequest.status, func.count())
+            .where(
+                LeaveRequest.tenant_id == tenant_id,
+                LeaveRequest.is_deleted == False,  # noqa: E712
+                LeaveRequest.status.in_([LeaveRequestStatus.CANCELLED, LeaveRequestStatus.REVOKED]),
+                LeaveRequest.start_date >= cutoff,
+            )
+            .group_by(LeaveRequest.status)
+        )
+    ).all()
+    by_status = {s.value: c for s, c in rows}
+    return {"window_days": days, "cancelled": by_status.get("cancelled", 0), "revoked": by_status.get("revoked", 0)}
+
+
+async def get_break_summary(db: AsyncSession, tenant_id: UUID) -> dict:
+    """Who is on a break right now and how many breaks were started today."""
+    from datetime import UTC, datetime
+
+    from app.models.employee import Employee as Emp
+    from app.models.user import User
+    from app.models.work_session import BreakRecord, WorkSession
+
+    zone = await org_zone(db, tenant_id)
+    today = local_today(zone)
+    start_of_day = datetime.combine(today, datetime.min.time(), tzinfo=zone).astimezone(UTC)
+    taken_today = (
+        await db.execute(
+            select(func.count()).where(
+                BreakRecord.tenant_id == tenant_id, BreakRecord.started_at >= start_of_day,
+            )
+        )
+    ).scalar_one()
+    on_break = (
+        await db.execute(
+            select(User.first_name, User.last_name, BreakRecord.started_at)
+            .join(WorkSession, WorkSession.id == BreakRecord.work_session_id)
+            .join(Emp, Emp.id == WorkSession.employee_id)
+            .join(User, User.id == Emp.user_id)
+            .where(BreakRecord.tenant_id == tenant_id, BreakRecord.ended_at.is_(None))
+            .order_by(BreakRecord.started_at)
+            .limit(MAX_LISTED_PEOPLE)
+        )
+    ).all()
+    return {
+        "breaks_started_today": taken_today,
+        "on_break_now_count": len(on_break),
+        "on_break_now": [
+            {"name": f"{f or ''} {l or ''}".strip(), "since": started.isoformat()} for f, l, started in on_break
+        ],
+    }
+
+
+async def get_onboarding_summary(db: AsyncSession, tenant_id: UUID) -> dict:
+    """Open onboarding/offboarding checklists, overdue tasks and upcoming joiners."""
+    from app.services.onboarding import OnboardingService
+
+    data = await OnboardingService(db, tenant_id).dashboard()
+    return {
+        **data["totals"],
+        "upcoming_joiners": [
+            {"name": c["employee"]["name"], "joining_in_days": c["days_until"], "progress_percent": c["progress"]["percent"]}
+            for c in data["upcoming_joiners"][:10]
+        ],
+    }
+
+
 # ── Tool registry ────────────────────────────────────────────────────────────
 # name -> (description, parameters schema, function). Shared shape so both
 # the Anthropic and OpenAI branches in chat.py can build their own
@@ -201,6 +297,30 @@ TOOL_REGISTRY: dict[str, dict] = {
         "description": "Get totals (gross, deductions, net, employee count) from the most recent payroll run.",
         "parameters": {"type": "object", "properties": {}},
         "fn": get_payroll_summary,
+    },
+    "get_absent_today": {
+        "permission": "attendance.view",
+        "description": "List who is absent today (name, department, shift) and how many are on leave. Respects shifts, holidays and approved leave.",
+        "parameters": {"type": "object", "properties": {}},
+        "fn": get_absent_today,
+    },
+    "get_leave_cancellations": {
+        "permission": "leave.view",
+        "description": "Get how many leave requests were cancelled by employees or revoked by HR in a trailing window.",
+        "parameters": {"type": "object", "properties": {"days": {"type": "integer", "description": "Trailing window size in days, default 30"}}},
+        "fn": get_leave_cancellations,
+    },
+    "get_break_summary": {
+        "permission": "attendance.view",
+        "description": "Get who is on a break right now and how many breaks were started today.",
+        "parameters": {"type": "object", "properties": {}},
+        "fn": get_break_summary,
+    },
+    "get_onboarding_summary": {
+        "permission": "onboarding.view",
+        "description": "Get open onboarding/offboarding checklists, overdue tasks, and upcoming joiners.",
+        "parameters": {"type": "object", "properties": {}},
+        "fn": get_onboarding_summary,
     },
 }
 
@@ -258,5 +378,10 @@ async def execute_tool(
     if name not in allowed_tools:
         return {"error": "You do not have permission to access this data."}
     fn = tool["fn"]
-    # Every tool function takes (db, tenant_id, **rest)
-    return await fn(db, tenant_id, **_sanitize_arguments(arguments or {}))
+    # Every tool function takes (db, tenant_id, **rest). A failing query must
+    # reach the model as a readable error, not take the whole chat down.
+    try:
+        return await fn(db, tenant_id, **_sanitize_arguments(arguments or {}))
+    except Exception:  # noqa: BLE001
+        logger.exception("AI tool %s failed", name)
+        return {"error": "That data could not be loaded right now. Please try again."}

@@ -17,6 +17,8 @@ const PROVIDERS: { id: AIProvider; label: string; needsKey: boolean; defaultMode
   { id: "openai", label: "OpenAI", needsKey: true, defaultModel: "gpt-4o-mini", modelHint: "e.g. gpt-4o-mini, gpt-4o" },
   { id: "anthropic", label: "Anthropic Claude", needsKey: true, defaultModel: "claude-sonnet-5", modelHint: "e.g. claude-sonnet-5" },
   { id: "google", label: "Google Gemini", needsKey: true, defaultModel: "gemini-2.0-flash", modelHint: "e.g. gemini-2.0-flash" },
+  { id: "groq", label: "Groq", needsKey: true, defaultModel: "llama-3.3-70b-versatile", modelHint: "e.g. llama-3.3-70b-versatile" },
+  { id: "openrouter", label: "OpenRouter", needsKey: true, defaultModel: "openai/gpt-4o-mini", modelHint: "e.g. openai/gpt-4o-mini, anthropic/claude-sonnet-4" },
   { id: "ollama", label: "Ollama (self-hosted)", needsKey: false, defaultModel: "llama3.1", modelHint: "e.g. llama3.1, qwen2.5" },
 ];
 

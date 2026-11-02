@@ -15,6 +15,7 @@ app.services.ai_config for the resolution order and app.core.crypto for
 how the key is encrypted at rest.
 """
 
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -32,9 +33,21 @@ from app.services.ai_config import resolve_ai_config
 from app.services.ai_tools import TOOL_REGISTRY, execute_tool, tools_for_user
 
 router = APIRouter(prefix="/ai", tags=["AI Assistant"])
+logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDTRIPS = 3
-SUPPORTED_PROVIDERS = {"openai", "anthropic", "google", "ollama"}
+SUPPORTED_PROVIDERS = {"openai", "anthropic", "google", "ollama", "groq", "openrouter"}
+
+# Providers that speak the OpenAI chat-completions format at a fixed address.
+OPENAI_COMPATIBLE_BASE_URLS = {
+    "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+DEFAULT_MODELS = {"groq": "llama-3.3-70b-versatile", "openrouter": "openai/gpt-4o-mini"}
+
+REQUEST_TIMEOUT_SECONDS = 45
+MAX_HISTORY_MESSAGES = 20      # older turns are dropped, newest kept
+MAX_MESSAGE_CHARS = 4000       # one message can't blow up the prompt
 
 
 class ChatMessage(BaseModel):
@@ -47,6 +60,36 @@ class ChatRequest(BaseModel):
     history: list[ChatMessage] = []
 
 
+def build_messages(history: list[ChatMessage], message: str) -> list[dict]:
+    """Conversation sent to the model: only user/assistant turns (a client can't
+    smuggle in a `system` message), the newest MAX_HISTORY_MESSAGES, each capped
+    in length, and always starting with a user turn as every provider requires."""
+    turns = [
+        {"role": m.role, "content": m.content[:MAX_MESSAGE_CHARS]}
+        for m in history
+        if m.role in ("user", "assistant") and m.content.strip()
+    ][-MAX_HISTORY_MESSAGES:]
+    while turns and turns[0]["role"] != "user":
+        turns.pop(0)
+    turns.append({"role": "user", "content": message[:MAX_MESSAGE_CHARS]})
+    return turns
+
+
+def friendly_provider_error(exc: Exception) -> str:
+    """A short, safe explanation instead of the raw provider exception (which can
+    carry request details). Full detail goes to the server log."""
+    text = f"{type(exc).__name__} {exc}".lower()
+    if "timeout" in text or "timed out" in text:
+        return "The AI provider took too long to answer. Please try again."
+    if any(k in text for k in ("401", "unauthorized", "invalid api key", "authentication", "incorrect api key")):
+        return "The AI provider rejected the API key. Ask an admin to check it in Settings → AI Configuration."
+    if "429" in text or "rate limit" in text or "quota" in text:
+        return "The AI provider is rate limiting requests right now. Please try again in a minute."
+    if any(k in text for k in ("connection", "connect", "dns", "unreachable")):
+        return "Could not reach the AI provider. Please try again."
+    return "The AI provider returned an error. Please try again."
+
+
 class ChatResponse(BaseModel):
     response: str
     tools_used: list[str] = []
@@ -57,6 +100,7 @@ You help HR managers, admins, and employees with:
 - Workforce analytics and insights (headcount, attrition, department breakdowns)
 - Attendance and leave data interpretation
 - Payroll summaries and cost analysis
+- Who is absent or on a break today, leave cancellations, and onboarding progress
 - Policy explanations
 
 You have tools available to pull real, live numbers from this organization's
@@ -104,7 +148,7 @@ async def _chat_anthropic(
 ) -> tuple[str, list[str]]:
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.Anthropic(api_key=api_key, timeout=REQUEST_TIMEOUT_SECONDS)
     tools = _anthropic_tools(allowed_tools)
     tools_used: list[str] = []
     conversation = list(messages)
@@ -174,7 +218,12 @@ async def _run_openai_compatible(
         })
         for tc in choice.tool_calls:
             tools_used.append(tc.function.name)
-            args = _json.loads(tc.function.arguments or "{}")
+            try:
+                args = _json.loads(tc.function.arguments or "{}")
+                if not isinstance(args, dict):
+                    args = {}
+            except ValueError:
+                args = {}  # small models sometimes emit broken JSON; run the tool with defaults
             result = await execute_tool(
                 tc.function.name, args, db, tenant_id, allowed_tools=allowed_tools
             )
@@ -193,8 +242,23 @@ async def _chat_openai(
 ) -> tuple[str, list[str]]:
     import openai
 
-    client = openai.OpenAI(api_key=api_key)
+    client = openai.OpenAI(api_key=api_key, timeout=REQUEST_TIMEOUT_SECONDS)
     return await _run_openai_compatible(client, model, messages, db, tenant_id, allowed_tools)
+
+
+async def _chat_openai_compatible(
+    provider: str, api_key: str, model: str, messages: list[dict], db: AsyncSession, tenant_id: UUID,
+    allowed_tools: frozenset[str] = frozenset(),
+) -> tuple[str, list[str]]:
+    """Groq and OpenRouter both expose the OpenAI wire format at a fixed URL."""
+    import openai
+
+    client = openai.OpenAI(
+        api_key=api_key, base_url=OPENAI_COMPATIBLE_BASE_URLS[provider], timeout=REQUEST_TIMEOUT_SECONDS
+    )
+    return await _run_openai_compatible(
+        client, model or DEFAULT_MODELS[provider], messages, db, tenant_id, allowed_tools
+    )
 
 
 async def _chat_ollama(
@@ -211,7 +275,7 @@ async def _chat_ollama(
     normalized = base_url.rstrip("/")
     if not normalized.endswith("/v1"):
         normalized = f"{normalized}/v1"
-    client = openai.OpenAI(api_key="ollama", base_url=normalized)
+    client = openai.OpenAI(api_key="ollama", base_url=normalized, timeout=REQUEST_TIMEOUT_SECONDS)
     return await _run_openai_compatible(
         client, model or "llama3.1", messages, db, tenant_id, allowed_tools
     )
@@ -308,6 +372,10 @@ async def _dispatch_chat(
         if not api_key:
             raise AIProviderError("Google AI API key not configured")
         return await _chat_google(api_key, model or "gemini-1.5-flash", messages, db, tenant_id, allowed_tools)
+    if provider in OPENAI_COMPATIBLE_BASE_URLS:
+        if not api_key:
+            raise AIProviderError(f"{provider.capitalize()} API key not configured")
+        return await _chat_openai_compatible(provider, api_key, model, messages, db, tenant_id, allowed_tools)
     if provider == "ollama":
         return await _chat_ollama(
             base_url or settings.OLLAMA_BASE_URL, model, messages, db, tenant_id, allowed_tools
@@ -324,8 +392,7 @@ async def chat(
 ) -> ChatResponse:
     """Send a message to the AI assistant and receive a data-grounded response."""
 
-    messages = [{"role": m.role, "content": m.content} for m in request.history]
-    messages.append({"role": "user", "content": request.message})
+    messages = build_messages(request.history, request.message)
 
     cfg = await resolve_ai_config(db, tenant_id)
 
@@ -333,7 +400,7 @@ async def chat(
         return ChatResponse(
             response=(
                 "AI Assistant is not configured. Please add your API key in Settings → "
-                "AI Configuration. Supported providers: OpenAI, Anthropic Claude, Google Gemini, Ollama."
+                "AI Configuration. Supported providers: OpenAI, Anthropic Claude, Google Gemini, Groq, OpenRouter, Ollama."
             ),
             tools_used=[],
         )
@@ -348,7 +415,8 @@ async def chat(
     except AIProviderError:
         raise
     except Exception as exc:
-        raise AIProviderError(f"AI provider error: {str(exc)}") from exc
+        logger.exception("AI provider call failed (provider=%s)", cfg.provider)
+        raise AIProviderError(friendly_provider_error(exc)) from exc
 
 
 # ── Per-organization AI Configuration ───────────────────────────────────────
@@ -552,4 +620,5 @@ async def test_ai_config(
         )
         return AIConfigTestResult(ok=True, message=content[:200] or "Connection succeeded.")
     except Exception as exc:
-        return AIConfigTestResult(ok=False, message=str(exc)[:300])
+        logger.warning("AI config test failed (provider=%s): %s", body.provider, exc)
+        return AIConfigTestResult(ok=False, message=friendly_provider_error(exc))
