@@ -1,16 +1,20 @@
 "use client";
 
-import { useState } from "react";
-import { Building2, Users, Shield, Bell, Palette, Key, Webhook, Bot } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Building2, Users, Shield, Bell, Palette, Key, Webhook, Bot, Coffee } from "lucide-react";
 import { Card, PageHeader } from "@/components/atoms";
 import { RolesManager } from "@/components/organisms/RolesManager";
 import { AIConfigSettings } from "@/components/organisms/AIConfigSettings";
 import { OrganizationSettingsForm } from "@/components/organisms/OrganizationSettingsForm";
+import { BreakSettings, usePendingBreakRequests } from "@/components/organisms/BreakSettings";
+import { OrganizationLogoCard } from "@/components/organization/OrganizationLogoCard";
+import { NotificationSettings } from "@/components/organisms/NotificationSettings";
 
 const TABS = [
   { id: "general",       label: "General",       icon: Building2 },
   { id: "members",       label: "Members",       icon: Users },
   { id: "roles",         label: "Roles",         icon: Shield },
+  { id: "break",         label: "Break",         icon: Coffee },
   { id: "ai",            label: "AI Assistant",  icon: Bot },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "appearance",    label: "Appearance",    icon: Palette },
@@ -20,6 +24,13 @@ const TABS = [
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState("general");
+  const pendingBreaks = usePendingBreakRequests().data?.pending_count ?? 0;
+
+  // Links like /settings?tab=notifications open that tab.
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    if (wanted && TABS.some((t) => t.id === wanted)) setActiveTab(wanted);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -40,19 +51,31 @@ export default function SettingsPage() {
             >
               <tab.icon size={15} />
               {tab.label}
+              {tab.id === "break" && pendingBreaks > 0 && (
+                <span className="ml-auto rounded-full bg-[hsl(var(--destructive))] px-1.5 text-[10px] font-semibold text-white">{pendingBreaks}</span>
+              )}
             </button>
           ))}
         </nav>
 
         {/* Content */}
         <div className="flex-1">
-          {activeTab === "general" && <OrganizationSettingsForm />}
+          {activeTab === "general" && (
+            <div className="space-y-4">
+              <OrganizationLogoCard />
+              <OrganizationSettingsForm />
+            </div>
+          )}
 
           {activeTab === "roles" && <RolesManager />}
 
+          {activeTab === "break" && <BreakSettings />}
+
           {activeTab === "ai" && <AIConfigSettings />}
 
-          {(activeTab === "members" || activeTab === "notifications" || activeTab === "appearance" || activeTab === "api" || activeTab === "webhooks") && (
+          {activeTab === "notifications" && <NotificationSettings />}
+
+          {(activeTab === "members" || activeTab === "appearance" || activeTab === "api" || activeTab === "webhooks") && (
             <Card>
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[hsl(var(--secondary))]">

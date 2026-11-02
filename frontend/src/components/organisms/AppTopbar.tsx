@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { Bell, Search, ChevronsUpDown, ChevronRight, User, Settings, LogOut, ShieldAlert } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search, ChevronsUpDown, ChevronRight, User, Settings, LogOut } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuthStore } from "@/store/auth.store";
-import { useRecentDeviceAlerts } from "@/services/devices.service";
+import { NotificationBell } from "./NotificationBell";
+import { CommandPalette } from "./CommandPalette";
 
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
@@ -25,6 +26,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/workflow-builder": "Workflow Builder",
   "/marketplace": "Marketplace",
   "/billing": "Billing",
+  "/settings/management": "Management",
   "/settings": "Settings",
   "/shifts": "Shifts",
   "/leave-types": "Leave Types",
@@ -34,12 +36,16 @@ const PAGE_TITLES: Record<string, string> = {
 };
 
 function getPageTitle(pathname: string): string {
+  // Most specific match wins (/settings/management before /settings).
+  let best = "EWMP";
+  let bestLen = 0;
   for (const [path, title] of Object.entries(PAGE_TITLES)) {
-    if (pathname === path || pathname.startsWith(path + "/")) {
-      return title;
+    if ((pathname === path || pathname.startsWith(path + "/")) && path.length > bestLen) {
+      best = title;
+      bestLen = path.length;
     }
   }
-  return "EWMP";
+  return best;
 }
 
 export function AppTopbar() {
@@ -47,6 +53,21 @@ export function AppTopbar() {
   const router = useRouter();
   const { user, logout } = useAuthStore();
   const pageTitle = getPageTitle(pathname);
+
+  // Global search: Ctrl+K / Cmd+K from anywhere, or click the Search box.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [shortcut, setShortcut] = useState("Ctrl K");
+  useEffect(() => {
+    if (/Mac|iPhone|iPad/i.test(navigator.platform)) setShortcut("⌘K");
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setSearchOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <header className="flex h-16 shrink-0 items-center justify-between gap-4 bg-[hsl(var(--background))] px-8">
@@ -67,13 +88,19 @@ export function AppTopbar() {
       {/* Right: Actions */}
       <div className="flex items-center gap-3">
         {/* Global search trigger */}
-        <button className="flex h-10 w-64 items-center gap-2 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3.5 text-sm text-[hsl(var(--foreground-muted))] shadow-[var(--shadow-xs)] transition-colors hover:border-[hsl(var(--brand-300))]">
+        <button
+          type="button"
+          onClick={() => setSearchOpen(true)}
+          aria-label="Search"
+          className="flex h-10 w-64 items-center gap-2 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3.5 text-sm text-[hsl(var(--foreground-muted))] shadow-[var(--shadow-xs)] transition-colors hover:border-[hsl(var(--brand-300))]"
+        >
           <Search size={18} />
           <span>Search</span>
           <span className="ml-auto rounded border border-[hsl(var(--border))] px-1.5 py-0.5 text-xs font-medium">
-            ⌘K
+            {shortcut}
           </span>
         </button>
+        <CommandPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
 
         {/* Notifications */}
         <NotificationBell />
@@ -121,75 +148,5 @@ export function AppTopbar() {
         </div>
       </div>
     </header>
-  );
-}
-
-function NotificationBell() {
-  const [open, setOpen] = useState(false);
-  const router = useRouter();
-  const { data: alerts } = useRecentDeviceAlerts(120); // last 2 hours
-  const unacknowledgedCount = (alerts ?? []).filter((a) => !a.is_acknowledged).length;
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="relative flex h-10 w-10 items-center justify-center rounded-md text-[hsl(var(--foreground-muted))] transition-colors hover:bg-[hsl(var(--background-subtle))] hover:text-[hsl(var(--foreground))]"
-      >
-        <Bell size={20} />
-        {unacknowledgedCount > 0 && (
-          <span className="absolute right-1 top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-[hsl(var(--destructive))] px-0.5 text-[9px] font-bold text-white">
-            {unacknowledgedCount > 9 ? "9+" : unacknowledgedCount}
-          </span>
-        )}
-      </button>
-
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-10 z-50 w-80 rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] shadow-lg">
-            <div className="border-b border-[hsl(var(--border))] px-4 py-3">
-              <p className="text-sm font-semibold">Device Alerts</p>
-              <p className="text-xs text-[hsl(var(--foreground-muted))]">Last 2 hours</p>
-            </div>
-            <div className="max-h-80 overflow-y-auto">
-              {!alerts || alerts.length === 0 ? (
-                <p className="px-4 py-6 text-center text-xs text-[hsl(var(--foreground-muted))]">
-                  No recent alerts
-                </p>
-              ) : (
-                alerts.map((a) => (
-                  <button
-                    key={a.id}
-                    onClick={() => {
-                      setOpen(false);
-                      router.push(`/devices?device_id=${a.device_id}&tab=alerts`);
-                    }}
-                    className="flex w-full items-start gap-2.5 border-b border-[hsl(var(--border))] px-4 py-2.5 text-left last:border-0 hover:bg-[hsl(var(--accent))]"
-                  >
-                    <ShieldAlert size={14} className="mt-0.5 shrink-0 text-[hsl(var(--warning))]" />
-                    <div className="min-w-0">
-                      <p className="truncate text-xs font-medium">{a.device_name}</p>
-                      <p className="truncate text-xs text-[hsl(var(--foreground-muted))]">
-                        {a.alert_type === "flagged_browsing" ? "Visited" : "Used"}: {a.detail}
-                      </p>
-                    </div>
-                  </button>
-                ))
-              )}
-            </div>
-            <button
-              onClick={() => {
-                setOpen(false);
-                router.push("/devices/alerts");
-              }}
-              className="w-full border-t border-[hsl(var(--border))] px-4 py-2.5 text-center text-xs font-medium text-[hsl(var(--primary))] hover:bg-[hsl(var(--accent))]"
-            >
-              View all alerts →
-            </button>
-          </div>
-        </>
-      )}
-    </div>
   );
 }
