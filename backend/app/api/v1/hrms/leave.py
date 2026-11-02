@@ -324,6 +324,14 @@ async def approve_leave(
     req.status = LeaveRequestStatus.APPROVED
     req.approved_at = datetime.now(UTC)
     await db.flush()
+
+    from app.services.notify import notify, user_id_for_employee
+    await notify(
+        db, tenant_id, [await user_id_for_employee(db, tenant_id, req.employee_id)],
+        category="leave", icon="check-circle", title="Leave approved",
+        body=f"Your leave from {req.start_date} to {req.end_date} was approved.",
+        action_url="/leave", metadata={"leave_request_id": str(req.id)},
+    )
     return {"id": str(req.id), "status": req.status.value, "message": "Leave approved"}
 
 @router.post("/requests/{request_id}/reject")
@@ -360,6 +368,15 @@ async def reject_leave(
     req.status = LeaveRequestStatus.REJECTED
     req.rejection_reason = body.reason
     await db.flush()
+
+    from app.services.notify import notify, user_id_for_employee
+    reason = f" Reason: {body.reason}" if body.reason else ""
+    await notify(
+        db, tenant_id, [await user_id_for_employee(db, tenant_id, req.employee_id)],
+        category="leave", icon="x-circle", title="Leave rejected",
+        body=f"Your leave from {req.start_date} to {req.end_date} was rejected.{reason}",
+        action_url="/leave", metadata={"leave_request_id": str(req.id)},
+    )
     return {"id": str(req.id), "status": req.status.value, "message": "Leave rejected"}
 
 async def _resolve_leave_employee(
@@ -462,6 +479,18 @@ async def apply_leave(
     db.add(req)
     balance.pending_days = balance.pending_days + total_days
     await db.flush()
+
+    # Tell everyone who can approve leave (not the person who just applied).
+    from app.services.notify import employee_name, notify, user_ids_with_permission
+    approvers = await user_ids_with_permission(db, tenant_id, "leave.approve", exclude=[current_user.id])
+    who = await employee_name(db, tenant_id, employee_id)
+    await notify(
+        db, tenant_id, approvers, category="leave", icon="calendar",
+        title="New leave request",
+        body=f"{who} asked for {total_days} day(s) of {leave_type.name}, {sd} to {ed}.",
+        action_url="/leave",
+        metadata={"leave_request_id": str(req.id), "employee_id": str(employee_id)},
+    )
     return {
         "id": str(req.id),
         "employee_id": str(employee_id),

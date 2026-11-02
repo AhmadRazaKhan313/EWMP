@@ -22,6 +22,28 @@ from types import SimpleNamespace
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _no_notifications(monkeypatch):
+    """These tests script every db.execute() call in order. Sending notifications
+    makes extra queries, and has its own tests (test_notifications.py)."""
+    import app.services.notify as notify_mod
+
+    async def _zero(*a, **k):
+        return 0
+
+    async def _none(*a, **k):
+        return None
+
+    async def _empty(*a, **k):
+        return []
+
+    monkeypatch.setattr(notify_mod, "notify", _zero)
+    monkeypatch.setattr(notify_mod, "user_id_for_employee", _none)
+    monkeypatch.setattr(notify_mod, "employee_name", _none)
+    monkeypatch.setattr(notify_mod, "user_ids_with_permission", _empty)
+    monkeypatch.setattr(notify_mod, "user_ids_for_employees", _empty)
+
 import app.api.v1.hrms.leave as leave_mod
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.models.attendance import LeaveBalance, LeaveRequest, LeaveRequestStatus, LeaveType
