@@ -23,6 +23,8 @@ celery_app = Celery(
         "app.workers.tasks.device_health",
         "app.workers.tasks.attendance",
         "app.workers.tasks.auth_sessions",
+        "app.workers.tasks.onboarding",
+        "app.workers.tasks.contracts",
     ],
 )
 
@@ -65,6 +67,16 @@ celery_app.conf.beat_schedule = {
     },
     # Drops expired refresh-token rows (audit H-6) so auth_refresh_tokens
     # doesn't grow without bound.
+    # Daily onboarding sweep: activate cases, remind/escalate overdue tasks, expire offers (N-01).
+    "onboarding-daily-sweep": {
+        "task": "onboarding.daily_sweep",
+        "schedule": 86400,
+    },
+    # Daily reminder to HR about contracts nearing their end date (E-07).
+    "notify-expiring-contracts": {
+        "task": "contracts.notify_expiring_contracts",
+        "schedule": 86400,
+    },
     "purge-expired-refresh-tokens": {
         "task": "auth.purge_expired_refresh_tokens",
         "schedule": 86400,
