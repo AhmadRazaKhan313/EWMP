@@ -127,12 +127,12 @@ export default function CheckInWidget({
             admin dashboard's ring. */}
         <span
           className="absolute h-[18px] w-[18px] rounded-full border-[3px] border-[hsl(var(--card))] bg-[hsl(var(--shift-start))]"
-          style={{ top: RING_STROKE / 2 - 1, left: RING_SIZE / 2 - 9 }}
+          style={{ top: RING_STROKE / 2, left: "50%", transform: "translate(-50%, -50%)" }}
           aria-hidden
         />
         <span
           className="absolute h-[18px] w-[18px] rounded-full border-[3px] border-[hsl(var(--card))] bg-[hsl(var(--shift-end))]"
-          style={{ bottom: RING_STROKE / 2 - 1, left: RING_SIZE / 2 - 9 }}
+          style={{ bottom: RING_STROKE / 2, left: "50%", transform: "translate(-50%, 50%)" }}
           aria-hidden
         />
 

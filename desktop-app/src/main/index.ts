@@ -19,6 +19,7 @@ import {
 } from "./activityTracker";
 import { applyTrayStatus } from "./trayStatus";
 import { relayToOtherWindows } from "./attendanceBroadcast";
+import { createBreakLockController, registerBreakLockIpc, type LockableWindow } from "./breakLock";
 import {
   createWidgetWindowManager,
   WIDGET_HEIGHT,
@@ -276,6 +277,11 @@ app.whenReady().then(() => {
   ipcMain.handle(IPC_CHANNELS.SECURE_STORE_CLEAR, () => clearSecureStore());
   ipcMain.handle(IPC_CHANNELS.APP_GET_VERSION, () => app.getVersion());
   ipcMain.handle(IPC_CHANNELS.WINDOW_HIDE, () => mainWindow?.hide());
+  // Break-time lock (K-01): the renderer decides WHEN, this only covers/uncovers the screen.
+  registerBreakLockIpc(
+    ipcMain,
+    createBreakLockController({ getWindow: () => mainWindow as unknown as LockableWindow | null, widget }),
+  );
   // Phase 4 item #1 (self-enrollment): the renderer has no Node access
   // (nodeIntegration: false), so hostname/CPU/RAM/MAC — all only readable
   // via Node's `os` module — have to be collected here and handed over,

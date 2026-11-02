@@ -15,6 +15,8 @@ import { useNotificationBadge } from "./hooks/useNotificationBadge";
 import { useActivityTracking } from "./hooks/useActivityTracking";
 import { useShiftReminders } from "./hooks/useShiftReminders";
 import { useAttendanceSync } from "./hooks/useAttendanceSync";
+import { useBreakLock } from "./hooks/useBreakLock";
+import BreakLockScreen, { BreakWarningBanner } from "./screens/BreakLockScreen";
 
 // The main window and the floating desktop widget (see main/index.ts's
 // createWidgetWindow) load the exact same renderer bundle — this flag,
@@ -74,6 +76,8 @@ function MainApp(): JSX.Element {
   // own docs for why this lives here (main window only, runs in the
   // background) rather than in WidgetScreen too.
   useShiftReminders(status === "authenticated");
+  // Break-time lock: covers the screen during the break the admin set (K-01).
+  const breakLock = useBreakLock(status === "authenticated" && !user?.must_change_password);
 
   useEffect(() => {
     attachAuthFailureListener();
@@ -115,11 +119,20 @@ function MainApp(): JSX.Element {
     return <ChangePasswordScreen />;
   }
 
+  if (breakLock.locked) {
+    return <BreakLockScreen state={breakLock} />;
+  }
+
   if (deviceStatus === "needs_consent") {
     return <ConsentNotice />;
   }
 
-  return <AuthenticatedPlaceholder />;
+  return (
+    <>
+      {breakLock.phase === "warning" && <BreakWarningBanner secondsToStart={breakLock.secondsToStart} />}
+      <AuthenticatedPlaceholder />
+    </>
+  );
 }
 
 function StartingScreen(): JSX.Element {

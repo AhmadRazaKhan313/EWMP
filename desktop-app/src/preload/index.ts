@@ -55,6 +55,10 @@ export interface EwmpBridge {
      * from there. (hide() is the close/X: it goes to the tray.) */
     minimize: () => Promise<void>;
   };
+  /** Break-time lock (K-01): cover / uncover the whole screen. */
+  breakLock: {
+    setLocked: (locked: boolean) => Promise<void>;
+  };
   /** Attendance changes made in one window reach the others immediately. */
   attendance: {
     /** Tell the other windows the attendance state just changed on the server. */
@@ -104,6 +108,10 @@ const ewmpBridge: EwmpBridge = {
     isVisible: (): Promise<boolean> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_IS_VISIBLE),
     openApp: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_OPEN_APP),
     minimize: (): Promise<void> => ipcRenderer.invoke(IPC_CHANNELS.WIDGET_MINIMIZE),
+  },
+  breakLock: {
+    // channel name mirrors BREAK_LOCK_CHANNEL in main/breakLock.ts
+    setLocked: (locked: boolean): Promise<void> => ipcRenderer.invoke("break-lock:set", locked),
   },
   attendance: {
     notifyChanged: (): void => ipcRenderer.send(IPC_CHANNELS.ATTENDANCE_NOTIFY_CHANGED),
