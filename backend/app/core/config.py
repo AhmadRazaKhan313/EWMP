@@ -1,8 +1,8 @@
-"""
+﻿"""
 Application configuration.
 
 All settings are loaded from environment variables (or a .env file).
-Pydantic Settings v2 validates every value at startup — the app will
+Pydantic Settings v2 validates every value at startup â€” the app will
 refuse to start if a required variable is missing or malformed.
 """
 
@@ -21,14 +21,14 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Application ─────────────────────────────────────────────
-    APP_NAME: str = "EWMP — Enterprise Workforce Management Platform"
+    # â”€â”€ Application â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    APP_NAME: str = "EWMP â€” Enterprise Workforce Management Platform"
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: Literal["development", "staging", "production"] = "development"
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"
 
-    # ── Security ─────────────────────────────────────────────────
+    # â”€â”€ Security â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
@@ -49,32 +49,32 @@ class Settings(BaseSettings):
     REFRESH_REUSE_GRACE_SECONDS: int = 10
     ENCRYPTION_KEY: str  # 32-byte key for field-level encryption
 
-    # ── CORS ─────────────────────────────────────────────────────
+    # â”€â”€ CORS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # NoDecode: pydantic-settings normally tries its own json.loads() on any
     # env var feeding a list[str] field BEFORE parse_cors_origins() below ever
-    # runs — and raises SettingsError immediately if that isn't byte-perfect
+    # runs â€” and raises SettingsError immediately if that isn't byte-perfect
     # JSON, meaning the comma-separated fallback that validator implements
     # was unreachable dead code. This was invisible with a hand-written
     # (LF-only, no stray bytes) JSON array in .env, but broke the moment the
     # value picked up so much as a trailing character (e.g. a Windows \r, or
-    # docker-compose's own ${VAR} substitution reformatting it) — or if
+    # docker-compose's own ${VAR} substitution reformatting it) â€” or if
     # anyone wrote a comma-separated value the way the validator's docstring
     # says is supported. NoDecode hands the raw string straight to the
     # validator instead, so it decides how to parse it.
     ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
 
-    # ── Database ─────────────────────────────────────────────────
+    # â”€â”€ Database â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     DATABASE_URL: PostgresDsn
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 40
     DATABASE_POOL_TIMEOUT: int = 30
 
-    # ── Redis ────────────────────────────────────────────────────
+    # â”€â”€ Redis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     REDIS_URL: str = "redis://localhost:6379/0"
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
-    # ── Storage ──────────────────────────────────────────────────
+    # â”€â”€ Storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     STORAGE_BACKEND: Literal["s3", "r2", "minio", "local"] = "local"
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
@@ -91,12 +91,12 @@ class Settings(BaseSettings):
     AGENT_TOKEN_EXPIRE_DAYS: int = 90
     AGENT_TOKEN_ROTATE_AFTER_DAYS: int = 30
 
-    # ── Device Activity Watchlist ────────────────────────────────────
+    # â”€â”€ Device Activity Watchlist â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Default set of domains/app-window-title keywords the agent flags as
     # non-work activity (FEAT: Device Alerts). Platform-wide default;
     # an organization can override this via the /devices/activity-watchlist
     # endpoint if a per-org list is configured later. Kept short and
-    # explicit rather than an exhaustive blocklist — the goal is catching
+    # explicit rather than an exhaustive blocklist â€” the goal is catching
     # obvious policy violations, not building a comprehensive web filter.
     DEVICE_ACTIVITY_WATCHLIST: list[str] = [
         "facebook.com", "instagram.com", "tiktok.com", "twitter.com", "x.com",
@@ -104,10 +104,10 @@ class Settings(BaseSettings):
         "whatsapp.com",
     ]
 
-    # ── Device Online/Offline Detection ──────────────────────────────
+    # â”€â”€ Device Online/Offline Detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # The desktop app/agent pings POST /devices/heartbeat roughly every
     # DEVICE_HEARTBEAT_INTERVAL_SECONDS while running. A device only ever
-    # gets flipped to ONLINE by a heartbeat (or enrollment) arriving — it
+    # gets flipped to ONLINE by a heartbeat (or enrollment) arriving â€” it
     # never flips itself back to OFFLINE when the app quits or the machine
     # loses power, since there's no "goodbye" signal to rely on. The
     # `device_health.mark_stale_devices_offline` Celery beat task is what
@@ -118,11 +118,11 @@ class Settings(BaseSettings):
     DEVICE_HEARTBEAT_INTERVAL_SECONDS: int = 60
     DEVICE_OFFLINE_AFTER_SECONDS: int = 180
 
-    # ── Automatic screenshots ────────────────────────────────────────
+    # â”€â”€ Automatic screenshots â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # While a device is connected (heartbeating), the heartbeat reply asks the
     # agent for a screenshot whenever the newest one for that device is older
     # than DEVICE_AUTO_SCREENSHOT_INTERVAL_SECONDS. No new agent code is
-    # needed — the desktop app already fulfils "screenshot" actions. Because
+    # needed â€” the desktop app already fulfils "screenshot" actions. Because
     # the request rides on the heartbeat, the real cadence is
     # max(interval, heartbeat interval). Set the flag to False to go back to
     # on-demand-only. Old captures are purged after
@@ -132,8 +132,8 @@ class Settings(BaseSettings):
     DEVICE_AUTO_SCREENSHOT_INTERVAL_SECONDS: int = 60
     DEVICE_SCREENSHOT_RETENTION_DAYS: int = 7
 
-    # ── Email ────────────────────────────────────────────────────
-    # Brevo's free tier (300 emails/day, no card required) — see .env for
+    # â”€â”€ Email â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Brevo's free tier (300 emails/day, no card required) â€” see .env for
     # the signup + SMTP-key setup steps. SMTP_USER/PASSWORD still need to
     # be filled in per-environment; this default only saves re-typing the
     # host/port every time.
@@ -144,19 +144,21 @@ class Settings(BaseSettings):
     EMAILS_FROM_ADDRESS: str = "noreply@ewmp.io"
     EMAILS_FROM_NAME: str = "EWMP Platform"
 
-    # ── AI Providers ─────────────────────────────────────────────
+    # â”€â”€ AI Providers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     OPENAI_API_KEY: str = ""
     ANTHROPIC_API_KEY: str = ""
     GOOGLE_AI_API_KEY: str = ""
+    GROQ_API_KEY: str = ""
+    OPENROUTER_API_KEY: str = ""
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    DEFAULT_AI_PROVIDER: Literal["openai", "anthropic", "google", "ollama"] = "openai"
+    DEFAULT_AI_PROVIDER: Literal["openai", "anthropic", "google", "ollama", "groq", "openrouter"] = "openai"
     DEFAULT_AI_MODEL: str = "gpt-4o-mini"
 
-    # ── Platform Super Admin ─────────────────────────────────────
+    # â”€â”€ Platform Super Admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     SUPER_ADMIN_EMAIL: str
     SUPER_ADMIN_PASSWORD: str
 
-    # ── Rate Limiting ─────────────────────────────────────────────
+    # â”€â”€ Rate Limiting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = 100  # reserved (no global limiter yet)
     # Per-IP cap for the low-volume public endpoints that send email or create
     # accounts: /auth/register, /forgot-password, /reset-password, /verify-email.
@@ -171,31 +173,31 @@ class Settings(BaseSettings):
     # Master switch (set false only for local debugging / load tests).
     RATE_LIMIT_ENABLED: bool = True
 
-    # ── Account lockout ───────────────────────────────────────────
+    # â”€â”€ Account lockout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # 5 consecutive failures lock the account for 30 minutes (see
     # UserRepository.record_failed_login). ON by default; the gate used to be
-    # commented out "for testing" — set LOGIN_LOCKOUT_ENABLED=false in a dev
+    # commented out "for testing" â€” set LOGIN_LOCKOUT_ENABLED=false in a dev
     # .env instead of editing code.
     LOGIN_LOCKOUT_ENABLED: bool = True
 
-    # ── Reverse proxy ─────────────────────────────────────────────
+    # â”€â”€ Reverse proxy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # How many trusted reverse proxies sit in front of the API (0 = none; the API
     # is reached directly, e.g. docker-compose port 8000). Only when > 0 is the
-    # X-Forwarded-For header believed — otherwise any client could forge it to
+    # X-Forwarded-For header believed â€” otherwise any client could forge it to
     # dodge per-IP rate limits and spoof `last_login_ip`. Behind the bundled
     # nginx (which appends the real client IP) set this to 1.
     TRUSTED_PROXY_COUNT: int = 0
 
-    # ── Agent Communication ───────────────────────────────────────
+    # â”€â”€ Agent Communication â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     AGENT_SECRET_KEY: str  # Shared secret for desktop agent auth
     AGENT_HEARTBEAT_INTERVAL_SECONDS: int = 30
 
-    # ── Billing ──────────────────────────────────────────────────
+    # â”€â”€ Billing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     STRIPE_SECRET_KEY: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
     STRIPE_PUBLISHABLE_KEY: str = ""
 
-    # ── Integrations ─────────────────────────────────────────────
+    # â”€â”€ Integrations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     SLACK_CLIENT_ID: str = ""
     SLACK_CLIENT_SECRET: str = ""
     TEAMS_CLIENT_ID: str = ""
@@ -207,7 +209,7 @@ class Settings(BaseSettings):
     JIRA_CLIENT_ID: str = ""
     JIRA_CLIENT_SECRET: str = ""
 
-    # ── Feature Flags ─────────────────────────────────────────────
+    # â”€â”€ Feature Flags â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     FEATURE_AI_ASSISTANT: bool = True
     FEATURE_WORKFLOW_ENGINE: bool = True
     FEATURE_MARKETPLACE: bool = True
@@ -215,15 +217,15 @@ class Settings(BaseSettings):
     FEATURE_DEVICE_MANAGEMENT: bool = True
 
     # Defaults to True (secure). Set to False only for local/dev environments
-    # where SMTP isn't configured, so the "verify your email" gate — which
-    # depends on a real email actually being delivered — doesn't block
+    # where SMTP isn't configured, so the "verify your email" gate â€” which
+    # depends on a real email actually being delivered â€” doesn't block
     # everyone from using the app. Must stay True in production; there is no
     # per-user bypass, this is a single org-wide switch.
     REQUIRE_EMAIL_VERIFICATION: bool = True
 
     # Public base URL of the web app. Every link inside an email (verify
     # email, reset password, invite) is built from it, so it MUST match where
-    # the frontend is actually served — e.g. https://hr.yourcompany.com in
+    # the frontend is actually served â€” e.g. https://hr.yourcompany.com in
     # production. Links used to be hardcoded to https://app.ewmp.io, which
     # made verification impossible on any other domain (including localhost).
     FRONTEND_URL: str = "http://localhost:3000"
@@ -237,7 +239,7 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, v: str | list[str]) -> list[str]:
         """Accepts either a JSON array ('["a","b"]') or a plain
-        comma-separated list ('a,b') — and is defensive about whitespace and
+        comma-separated list ('a,b') â€” and is defensive about whitespace and
         stray \\r (a Windows-edited .env, or docker-compose's own ${VAR}
         substitution, can both add bytes a strict json.loads() rejects)."""
         if isinstance(v, str):
@@ -265,6 +267,20 @@ class Settings(BaseSettings):
                 raise ValueError("DEBUG must be False in production")
             if not self.SECRET_KEY or len(self.SECRET_KEY) < 32:
                 raise ValueError("SECRET_KEY must be at least 32 characters in production")
+            if not self.AGENT_SECRET_KEY or len(self.AGENT_SECRET_KEY) < 32:
+                raise ValueError("AGENT_SECRET_KEY must be at least 32 characters in production")
+            if self.AGENT_SECRET_KEY == self.SECRET_KEY:
+                raise ValueError("AGENT_SECRET_KEY must differ from SECRET_KEY in production")
+            for origin in self.ALLOWED_ORIGINS:
+                lowered = origin.lower()
+                if "localhost" in lowered or "127.0.0.1" in lowered:
+                    raise ValueError(
+                        f"ALLOWED_ORIGINS must not contain a localhost origin in production (got {origin!r})"
+                    )
+                if lowered != "*" and not lowered.startswith("https://"):
+                    raise ValueError(f"ALLOWED_ORIGINS must use https:// in production (got {origin!r})")
+            if "*" in self.ALLOWED_ORIGINS:
+                raise ValueError("ALLOWED_ORIGINS must not be '*' in production")
         return self
 
     @property
