@@ -66,3 +66,20 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+
+# --- local backups, archives and scratch files (added by commit_groups.py) ---
+*.bak
+*.bak2
+*.bak3
+*.zip
+devtest.txt
+md5-checklist.txt
+verify_update.py
+ISSUES_AND_PLAN.md
+README.txt
+backend/whichdb.py
+backend/diag_absent.py
+/ewmp-*/
+/scripts/
+/commit_groups.py
+# (commit_groups.py)

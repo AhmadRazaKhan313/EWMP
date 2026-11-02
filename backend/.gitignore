@@ -1,0 +1,17 @@
+# secrets and local config
+.env
+.env.*
+!.env.production.example
+
+# data and backups — never commit
+*.dump
+*.sql
+storage/
+cutoff.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
