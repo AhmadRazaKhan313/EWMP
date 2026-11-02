@@ -310,7 +310,22 @@ async def approve_regularization(
     reg.reviewed_at = datetime.now(UTC)
     reg.review_comments = comments
     await db.flush()
+    await _tell_requester(db, tenant_id, reviewer, reg, "approved", comments)
     return reg
+
+
+async def _tell_requester(db, tenant_id, reviewer, reg, decision: str, comments: str | None) -> None:
+    from app.services.notify import notify, user_id_for_employee
+    people = {reg.requested_by_id, await user_id_for_employee(db, tenant_id, reg.employee_id)}
+    people.discard(reviewer.id)
+    note = f" Comment: {comments}" if comments else ""
+    await notify(
+        db, tenant_id, people, category="attendance",
+        icon="check-circle" if decision == "approved" else "x-circle",
+        title=f"Attendance correction {decision}",
+        body=f"Your attendance correction request was {decision}.{note}",
+        action_url="/attendance", metadata={"regularization_id": str(reg.id)},
+    )
 
 
 async def reject_regularization(
@@ -323,6 +338,7 @@ async def reject_regularization(
     reg.reviewed_at = datetime.now(UTC)
     reg.review_comments = comments
     await db.flush()
+    await _tell_requester(db, tenant_id, reviewer, reg, "rejected", comments)
     return reg
 
 
@@ -349,6 +365,7 @@ async def hr_record_day(
     check_in: str | None,
     check_out: str | None,
     attendance_status: AttendanceStatus,
+    reason: str | None = None,
 ) -> tuple[AttendanceRecord, bool]:
     """HR sets or corrects one day. Returns (day, created)."""
     zone = await org_zone(db, tenant_id)
@@ -380,7 +397,7 @@ async def hr_record_day(
         punch = await _apply_times(db, record, punch, new_in, new_out, hr_user.id)
         db.add(AttendanceRegularization(
             tenant_id=tenant_id, attendance_record_id=record.id, employee_id=employee_id, punch_id=punch.id,
-            date=on, requested_punch_in=new_in, requested_punch_out=new_out, reason=HR_REASON,
+            date=on, requested_punch_in=new_in, requested_punch_out=new_out, reason=reason or HR_REASON,
             status=RegularizationStatus.APPROVED, requested_by_id=hr_user.id,
             reviewed_by_id=hr_user.id, reviewed_at=datetime.now(UTC),
         ))

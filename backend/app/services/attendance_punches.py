@@ -54,9 +54,8 @@ from app.models.attendance import (
 
 # ── Cutoff policy ─────────────────────────────────────────────────────────
 
-# How long after a shift's scheduled end an open punch is allowed to keep
-# running before the scheduler closes it. Covers legitimate overtime
-# without letting a forgotten punch run into the next day.
+# Legacy knob (grace after shift end). The auto-checkout rule no longer uses
+# it — see CutoffPolicy: morning shifts close at 00:00, evening shifts at 09:00.
 DEFAULT_GRACE_HOURS_AFTER_SHIFT_END = 4
 
 # Absolute ceiling measured from punch_in, applied to EVERY punch
@@ -70,10 +69,31 @@ HARD_CAP_HOURS = 14
 
 @dataclass(frozen=True)
 class CutoffPolicy:
-    """Per-tenant knobs. Defaults match the module constants."""
+    """Per-tenant knobs. Defaults match the module constants.
 
-    grace_hours_after_shift_end: int = DEFAULT_GRACE_HOURS_AFTER_SHIFT_END
+    The auto-checkout rule for a forgotten check-out:
+
+      * MORNING shift (starts before 12:00)  -> closed at 00:00, the midnight
+        that ends the day the employee checked in.
+      * EVENING shift (starts at/after 12:00) -> closed at 09:00 the next morning.
+
+    Either way the closed punch is credited 0 minutes. Hours come back only
+    through an approved regularization.
+    """
+
+    grace_hours_after_shift_end: int = DEFAULT_GRACE_HOURS_AFTER_SHIFT_END  # no longer used by compute_cutoff_at
+    # Still the backstop for desktop timers that have no attendance punch behind them.
     hard_cap_hours: int = HARD_CAP_HOURS
+    morning_shift_starts_before: time = time(12, 0)
+    morning_cutoff_time: time = time(0, 0)   # on the day AFTER check-in
+    evening_cutoff_time: time = time(9, 0)   # the next time it is 09:00
+
+
+def is_morning_shift(punch_in: datetime, shift: Shift | None, policy: CutoffPolicy, zone: ZoneInfo) -> bool:
+    """Morning vs evening, by the shift's start time; with no shift, by when the
+    employee actually checked in (office clock)."""
+    start = shift.start_time if shift is not None else punch_in.astimezone(zone).time()
+    return start < policy.morning_shift_starts_before
 
 
 def compute_cutoff_at(
@@ -83,30 +103,27 @@ def compute_cutoff_at(
     zone: ZoneInfo = UTC_ZONE,
 ) -> datetime:
     """
-    The moment an open punch becomes stale.
+    The moment an open punch becomes stale (forgotten check-out).
 
-    Two candidate deadlines, and the EARLIER wins:
+    Morning shift -> 00:00 the night after check-in. Evening shift -> 09:00 the
+    next morning. All on the organisation's clock (`zone`).
 
-      * shift end + grace, when a shift is known;
-      * punch_in + hard cap, always.
-
-    Taking the earlier is what makes a mis-configured shift harmless. A
-    shift row with end_time accidentally set to 23:59 would otherwise
-    hold a punch open most of a day past the point it is obviously
-    abandoned; the hard cap still closes it.
-
-    Overnight shifts (is_overnight, e.g. 22:00–06:00) have their end on
-    the FOLLOWING calendar day relative to the shift's start, which is
-    why the end is anchored to the punch's own date and rolled forward
-    rather than being read off punch_in.date() directly.
+    Overnight shifts (e.g. 22:00-06:00) are evening shifts. Someone who punches
+    in after midnight, in the second half of such a shift, is closed at the
+    first 09:00 after that punch, i.e. the same morning, not a day later.
     """
-    hard_cap_at = punch_in + timedelta(hours=policy.hard_cap_hours)
-    if shift is None:
-        return hard_cap_at
+    local_in = punch_in.astimezone(zone)
+    day = local_in.date()
 
-    shift_end_at = _resolve_shift_end(punch_in, shift, zone)
-    shift_deadline = shift_end_at + timedelta(hours=policy.grace_hours_after_shift_end)
-    return min(shift_deadline, hard_cap_at)
+    if is_morning_shift(punch_in, shift, policy, zone):
+        return datetime.combine(day + timedelta(days=1), policy.morning_cutoff_time, tzinfo=zone)
+
+    if shift is not None and shift.is_overnight:
+        candidate = datetime.combine(day, policy.evening_cutoff_time, tzinfo=zone)
+        if candidate <= local_in:
+            candidate += timedelta(days=1)
+        return candidate
+    return datetime.combine(day + timedelta(days=1), policy.evening_cutoff_time, tzinfo=zone)
 
 
 def _resolve_shift_end(punch_in: datetime, shift: Shift, zone: ZoneInfo = UTC_ZONE) -> datetime:
@@ -545,6 +562,22 @@ async def run_auto_cutoff(
             await recalculate_from_punches(db, record)
 
     await db.flush()
+
+    # Tell each employee their open punch was closed for them. A failure here
+    # must never undo the cutoff itself.
+    try:
+        from app.services.notify import notify, user_id_for_employee
+        for tenant, employee, cutoff_at in result.closed_for:
+            await notify(
+                db, tenant, [await user_id_for_employee(db, tenant, employee)],
+                category="attendance", icon="clock", title="You were checked out automatically",
+                body=(f"You did not check out on {cutoff_at.date()}, so the system closed it. "
+                      "If your hours are wrong, ask for an attendance correction."),
+                action_url="/attendance", metadata={"date": str(cutoff_at.date())},
+            )
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger("ewmp.notify").exception("auto-checkout notifications failed")
     return result
 
 

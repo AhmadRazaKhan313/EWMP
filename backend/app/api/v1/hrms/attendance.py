@@ -35,6 +35,7 @@ from app.models.organization_structure import Branch
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
 from app.repositories.employee import EmployeeRepository
+from app.services.attendance_admin import admin_delete_record, admin_edit_record, audit_mark
 from app.services.attendance_punches import close_punch, get_open_punch, lock_employee_attendance, open_punch
 from app.services.attendance_regularization import (
     approve_regularization,
@@ -210,6 +211,9 @@ async def list_attendance(
                 "overtime_minutes": r.overtime_minutes,
                 "late_minutes": r.late_minutes,
                 "is_regularized": r.is_regularized,
+                # Entered or changed by an admin rather than punched by the employee.
+                "marked_by_admin": bool(r.is_regularized and r.regularized_by_id),
+                "notes": r.notes,
             }
             for r, user in items
         ],
@@ -290,6 +294,7 @@ async def record_attendance(
     check_in: str | None = None,
     check_out: str | None = None,
     attendance_status: AttendanceStatus = AttendanceStatus.PRESENT,
+    reason: str | None = Query(None, max_length=2000, description="Why HR is entering this (shown in the audit log)"),
     current_user: User = Depends(require_permission("attendance.regularize")),
     tenant_id: UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
@@ -309,9 +314,55 @@ async def record_attendance(
     punch times.
     """
     record, created = await hr_record_day(
-        db, tenant_id, current_user, employee_id, date, check_in, check_out, attendance_status
+        db, tenant_id, current_user, employee_id, date, check_in, check_out, attendance_status, reason
     )
+    await audit_mark(db, tenant_id, current_user, record, created=created, reason=reason)
     return {"id": str(record.id), "created": created}
+
+
+class AttendanceEdit(BaseModel):
+    reason: str = Field(min_length=3, max_length=2000)
+    check_in: str | None = None    # office-clock "HH:MM"
+    check_out: str | None = None
+    punch_id: UUID | None = None   # needed when the day has several punches
+    status: AttendanceStatus | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+    override_payroll_lock: bool = False
+
+
+@router.patch("/{record_id}", summary="Admin: edit a day directly (reason + audit log, no approval)")
+async def admin_edit_attendance(
+    record_id: UUID,
+    body: AttendanceEdit,
+    current_user: User = Depends(require_permission("attendance.edit")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    record = await admin_edit_record(
+        db, tenant_id, current_user, record_id, reason=body.reason, check_in=body.check_in,
+        check_out=body.check_out, punch_id=body.punch_id, attendance_status=body.status,
+        notes=body.notes, override_payroll_lock=body.override_payroll_lock,
+    )
+    return {
+        "id": str(record.id), "date": record.date.isoformat(), "status": record.status.value,
+        "check_in": record.check_in.isoformat() if record.check_in else None,
+        "check_out": record.check_out.isoformat() if record.check_out else None,
+        "total_minutes": record.total_minutes,
+    }
+
+
+@router.delete("/{record_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Admin: delete a day (soft, reason + audit log)")
+async def admin_delete_attendance(
+    record_id: UUID,
+    reason: str = Query(min_length=3, max_length=2000),
+    override_payroll_lock: bool = False,
+    current_user: User = Depends(require_permission("attendance.edit")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await admin_delete_record(
+        db, tenant_id, current_user, record_id, reason=reason, override_payroll_lock=override_payroll_lock
+    )
 
 
 # ── Regularization: employees ask, managers approve (audit M-7) ─────────────
