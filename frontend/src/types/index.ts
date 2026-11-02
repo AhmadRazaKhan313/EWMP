@@ -182,6 +182,7 @@ export interface Device {
   ram_usage_percent: number | null;
   disk_usage_percent: number | null;
   assigned_employee_id: string | null;
+  assigned_employee: DeviceAssignedEmployee | null;
   public_ip: string | null;
   local_ip: string | null;
 }
@@ -203,6 +204,11 @@ export interface DeviceAssignedEmployee {
   id: string;
   full_name: string | null;
   employee_code: string;
+  email: string | null;
+  phone: string | null;
+  avatar_url: string | null;
+  department: string | null;
+  designation: string | null;
 }
 
 export interface DeviceDetail {
@@ -276,6 +282,9 @@ export interface DeviceAlertItem {
 export interface RecentAlertItem extends DeviceAlertItem {
   device_id: string;
   device_name: string;
+  employee_name?: string | null;
+  employee_code?: string | null;
+  department?: string | null;
 }
 
 export interface AllowedAppItem {
