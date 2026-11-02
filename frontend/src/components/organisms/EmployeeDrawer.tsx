@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, FormProvider } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { X, Loader2, User, Briefcase, MapPin, Phone, CreditCard, FileText, Upload, Download, Trash2, Lock, AlertTriangle, Copy, Check } from "lucide-react";
@@ -11,6 +11,24 @@ import apiClient from "@/services/api-client";
 import { useAuthStore } from "@/store/auth.store";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/atoms";
+import { Input, Label, Select, SectionHeader } from "./employee-profile/fields";
+import {
+  PersonalExtrasSection,
+  PayItemsSection,
+  BankInsuranceSection,
+  EmergencyContactsSection,
+  BackgroundSection,
+  SkillsSection,
+  ProfilePhotoField,
+} from "./employee-profile/sections";
+import {
+  profileShape,
+  profileDefaults,
+  profileFromApi,
+  profileToApi,
+  validateProfile,
+  type ProfileFormValues,
+} from "./employee-profile/profileForm";
 import {
   DOCUMENT_TYPE_LABELS,
   type DocumentType,
@@ -28,7 +46,8 @@ const employeeSchema = z.object({
   email: z.string().email("Invalid email"),
   phone: z.string().optional(),
   date_of_birth: z.string().optional(),
-  gender: z.enum(["male", "female", "non_binary", "prefer_not_to_say"]).optional(),
+  // "" = nothing chosen (an untouched <select> reports an empty string).
+  gender: z.union([z.enum(["male", "female", "non_binary", "prefer_not_to_say"]), z.literal("")]).optional(),
   nationality: z.string().optional(),
   blood_group: z.string().optional(),
 
@@ -43,15 +62,18 @@ const employeeSchema = z.object({
   default_shift_id: z.string().optional(),
   work_location: z.string().optional(),
   is_remote: z.boolean().default(false),
+  manager_id: z.string().optional(),
+  probation_end_date: z.string().optional(),
+  date_of_confirmation: z.string().optional(),
+  notice_period_days: z.string().optional(),
 
   // Compensation
   current_salary: z.string().optional(),
   currency: z.string().default("USD"),
 
-  // Emergency
-  emergency_name: z.string().optional(),
-  emergency_phone: z.string().optional(),
-  emergency_relationship: z.string().optional(),
+  // Everything else (family, addresses, ID, bank, insurance, emergency
+  // contacts, education, experience, pay items) — shared with Edit.
+  ...profileShape,
 });
 
 type EmployeeForm = z.infer<typeof employeeSchema>;
@@ -79,73 +101,20 @@ type StagedDoc = {
   notes?: string;
 };
 
-// ── Field Components ──────────────────────────────────────────────────────────
-function Label({ children, required }: { children: React.ReactNode; required?: boolean }) {
-  return (
-    <label className="block text-xs font-medium text-[hsl(var(--foreground-subtle))] mb-1">
-      {children} {required && <span className="text-[hsl(var(--destructive))]">*</span>}
-    </label>
-  );
-}
-
-function Input({ error, className, ...props }: React.InputHTMLAttributes<HTMLInputElement> & { error?: boolean }) {
-  return (
-    <input
-      {...props}
-      className={cn(
-        "w-full rounded-md border px-3 py-2 text-sm outline-none transition-colors",
-        "bg-[hsl(var(--background))] placeholder:text-[hsl(var(--foreground-muted))]",
-        "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
-        error
-          ? "border-[hsl(var(--destructive))]"
-          : "border-[hsl(var(--border))] hover:border-[hsl(var(--border-strong))]",
-        className,
-      )}
-    />
-  );
-}
-
-function Select({ error, children, className, ...props }: React.SelectHTMLAttributes<HTMLSelectElement> & { error?: boolean }) {
-  return (
-    <select
-      {...props}
-      className={cn(
-        "w-full rounded-md border px-3 py-2 text-sm outline-none transition-colors",
-        "bg-[hsl(var(--background))]",
-        "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
-        error
-          ? "border-[hsl(var(--destructive))]"
-          : "border-[hsl(var(--border))] hover:border-[hsl(var(--border-strong))]",
-        className,
-      )}
-    >
-      {children}
-    </select>
-  );
-}
-
-function SectionHeader({ icon: Icon, title }: { icon: React.ElementType; title: string }) {
-  return (
-    <div className="flex items-center gap-2 border-b border-[hsl(var(--border))] pb-2 mb-4">
-      <div className="flex h-6 w-6 items-center justify-center rounded-md bg-[hsl(var(--secondary))]">
-        <Icon size={13} className="text-[hsl(var(--foreground-subtle))]" />
-      </div>
-      <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">{title}</h3>
-    </div>
-  );
-}
-
 // ── Main Component ────────────────────────────────────────────────────────────
 interface EmployeeDrawerProps {
   open: boolean;
   onClose: () => void;
   employeeId?: string; // if editing
+  /** "drawer" (default): slide-over with a backdrop. "page": the same form laid out in the page flow. */
+  variant?: "drawer" | "page";
 }
 
-export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProps) {
+export function EmployeeDrawer({ open, onClose, employeeId, variant = "drawer" }: EmployeeDrawerProps) {
+  const isPage = variant === "page";
   const qc = useQueryClient();
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"personal" | "employment" | "compensation" | "emergency" | "documents">("personal");
+  const [activeTab, setActiveTab] = useState<"personal" | "employment" | "compensation" | "background" | "emergency" | "documents">("personal");
 
   // Set right after a brand-new employee is created, so the drawer can
   // stay open and switch into "edit" behavior — documents can only be
@@ -164,22 +133,34 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
   const [stagedDocs, setStagedDocs] = useState<StagedDoc[]>([]);
   const uploadDoc = useUploadEmployeeDocument();
 
+  // Profile photo. A picked file is held here and sent right after the
+  // employee is saved (Add needs the new id first). `currentAvatar` is what the
+  // server already has; `photoRemoved` asks to delete it on save.
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoRemoved, setPhotoRemoved] = useState(false);
+  const [currentAvatar, setCurrentAvatar] = useState<string | null>(null);
+
   function handleClose() {
     setCreatedEmployeeId(null);
     setStagedDocs([]);
+    setPhotoFile(null);
+    setPhotoRemoved(false);
+    setCurrentAvatar(null);
     setActiveTab("personal");
     onClose();
   }
 
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<EmployeeForm>({
+  const form = useForm<EmployeeForm>({
     resolver: zodResolver(employeeSchema),
     defaultValues: {
       employment_type: "full_time",
       job_nature: "probationary",
       currency: "USD",
       is_remote: false,
+      ...profileDefaults,
     },
   });
+  const { register, handleSubmit, reset, watch, formState: { errors } } = form;
 
   // Real org-structure options, fetched live instead of hardcoded — dropdown
   // values now match real DB UUIDs, so saving department/designation/branch
@@ -215,6 +196,16 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
     enabled: open,
   });
 
+  // "Reports to" — any other employee in the organisation.
+  const { data: managersData } = useQuery({
+    queryKey: ["employees", "manager-options"],
+    queryFn: async () => (await apiClient.get("/employees", { params: { page_size: 200 } })).data,
+    enabled: open,
+  });
+  const managerOptions: { id: string; full_name: string; employee_code?: string }[] = (
+    managersData?.items ?? []
+  ).filter((m: { id: string }) => m.id !== effectiveEmployeeId);
+
   const departmentOptions: { id: string; name: string }[] = departments?.items ?? departments ?? [];
   const designationOptions: { id: string; title?: string; name?: string }[] = designations?.items ?? designations ?? [];
   const branchOptions: { id: string; name: string }[] = branches?.items ?? branches ?? [];
@@ -238,6 +229,9 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
     if (isEdit && open) {
       apiClient.get(`/employees/${effectiveEmployeeId}`).then(({ data }) => {
         initialRoleIdRef.current = data.role_id || "";
+        setCurrentAvatar(data.avatar_url || null);
+        setPhotoFile(null);
+        setPhotoRemoved(false);
         reset({
           first_name: data.first_name || "",
           last_name: data.last_name || "",
@@ -257,17 +251,44 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           default_shift_id: data.default_shift_id || "",
           work_location: data.work_location || "",
           is_remote: !!data.is_remote,
+          manager_id: data.manager_id || "",
+          probation_end_date: data.probation_end_date || "",
+          date_of_confirmation: data.date_of_confirmation || "",
+          notice_period_days: data.notice_period_days != null ? String(data.notice_period_days) : "",
           current_salary: data.current_salary ? String(data.current_salary) : "",
           currency: data.currency || "USD",
-          emergency_name: data.emergency_contact?.name || "",
-          emergency_phone: data.emergency_contact?.phone || "",
-          emergency_relationship: data.emergency_contact?.relationship || "",
+          ...profileFromApi(data),
         });
       });
     } else if (!isEdit && open) {
-      reset({ employment_type: "full_time", job_nature: "probationary", currency: "USD", is_remote: false });
+      reset({ employment_type: "full_time", job_nature: "probationary", currency: "USD", is_remote: false, ...profileDefaults });
     }
   }, [isEdit, effectiveEmployeeId, open, reset]);
+
+  // Sends the picked photo (or the removal) once the employee exists. A photo
+  // problem never undoes the saved employee — it is reported and can be retried
+  // from Edit.
+  async function syncPhoto(id: string) {
+    try {
+      if (photoFile) {
+        const body = new FormData();
+        body.append("file", photoFile);
+        const { data } = await apiClient.post(`/employees/${id}/avatar`, body, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        setCurrentAvatar(data.avatar_url ?? null);
+        setPhotoFile(null);
+      } else if (photoRemoved && currentAvatar) {
+        await apiClient.delete(`/employees/${id}/avatar`);
+        setCurrentAvatar(null);
+      }
+      setPhotoRemoved(false);
+    } catch (err) {
+      const message = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
+      toast.error(`Employee saved, but the photo wasn't updated${message ? `: ${message}` : "."}`);
+    }
+    void qc.invalidateQueries({ queryKey: ["employee"] });
+  }
 
   async function onSubmit(values: EmployeeForm) {
     // Role is mandatory on create (a role-less user has zero permissions).
@@ -283,19 +304,21 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
       setActiveTab("employment");
       return;
     }
+    const problem = validateProfile(values as ProfileFormValues);
+    if (problem) {
+      toast.error(problem.message);
+      setActiveTab(problem.tab);
+      return;
+    }
     setIsLoading(true);
     // Set the moment the server confirms the new employee. If anything fails
     // after that, the employee EXISTS and the message must say so -- a generic
     // "Something went wrong" there sends the admin off to create a duplicate.
     let employeeCreated = false;
     try {
-      const emergency_contact = values.emergency_name
-        ? {
-            name: values.emergency_name,
-            phone: values.emergency_phone || null,
-            relationship: values.emergency_relationship || null,
-          }
-        : null;
+      // One mapping for BOTH Add and Edit — before, Add sent fewer fields
+      // than Edit, so some of what was typed on "Add" was silently lost.
+      const profile = profileToApi(values as ProfileFormValues);
 
       if (isEdit) {
         const roleChanged = (values.role_id || "") !== initialRoleIdRef.current;
@@ -315,6 +338,10 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           default_shift_id: values.default_shift_id || null,
           work_location: values.work_location || null,
           is_remote: values.is_remote,
+          manager_id: values.manager_id || null,
+          probation_end_date: values.probation_end_date || null,
+          date_of_confirmation: values.date_of_confirmation || null,
+          ...(values.notice_period_days ? { notice_period_days: Number(values.notice_period_days) } : {}),
           current_salary: values.current_salary ? parseFloat(values.current_salary) : null,
           currency: values.currency,
           work_phone: values.phone || null,
@@ -322,8 +349,9 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           gender: values.gender || null,
           nationality: values.nationality || null,
           blood_group: values.blood_group || null,
-          emergency_contact,
+          ...profile,
         });
+        await syncPhoto(effectiveEmployeeId!);
         toast.success("Employee updated successfully");
       } else {
         // Single atomic call — backend creates the User + Employee together
@@ -343,6 +371,10 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           default_shift_id: values.default_shift_id || null,
           work_location: values.work_location || null,
           is_remote: values.is_remote,
+          manager_id: values.manager_id || null,
+          probation_end_date: values.probation_end_date || null,
+          date_of_confirmation: values.date_of_confirmation || null,
+          ...(values.notice_period_days ? { notice_period_days: Number(values.notice_period_days) } : {}),
           current_salary: values.current_salary ? parseFloat(values.current_salary) : null,
           currency: values.currency,
           phone: values.phone || null,
@@ -350,7 +382,7 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
           gender: values.gender || null,
           nationality: values.nationality || null,
           blood_group: values.blood_group || null,
-          emergency_contact,
+          ...profile,
         });
         employeeCreated = true;
 
@@ -401,6 +433,7 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
         // drawer in Edit mode, which most people would never think to do.
         if (res.data?.id) {
           const newId = res.data.id as string;
+          await syncPhoto(newId);
 
           // Flush any documents staged on the Add form now that the employee
           // (and its id) exists — documents FK to employees.id, so this is the
@@ -483,12 +516,27 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
     }
   }
 
+  // A required field can be wrong on a tab the user isn't looking at; without
+  // this, pressing Save did nothing and gave no hint why.
+  function onInvalid(fieldErrors: Record<string, { message?: string }>) {
+    const keys = Object.keys(fieldErrors);
+    const employmentKeys = ["date_of_joining", "employment_type", "job_nature", "role_id", "department_id", "designation_id", "branch_id", "default_shift_id", "work_location"];
+    if (keys.some((k) => employmentKeys.includes(k)) && !keys.some((k) => ["first_name", "last_name", "email"].includes(k))) {
+      setActiveTab("employment");
+    } else {
+      setActiveTab("personal");
+    }
+    const first = keys[0] ? fieldErrors[keys[0]]?.message : undefined;
+    toast.error(first ? `Please fix: ${keys[0]!.replace(/_/g, " ")} — ${first}` : "Please check the highlighted fields.");
+  }
+
   if (!open) return null;
 
   const tabs = [
     { id: "personal" as const,      label: "Personal" },
     { id: "employment" as const,     label: "Employment" },
     { id: "compensation" as const,   label: "Compensation" },
+    { id: "background" as const,     label: "Background" },
     { id: "emergency" as const,      label: "Emergency" },
     { id: "documents" as const,      label: "Documents" },
   ];
@@ -496,13 +544,21 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
   return (
     <>
       {/* Backdrop */}
-      <div
-        className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
-        onClick={handleClose}
-      />
+      {!isPage && (
+        <div
+          className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
+          onClick={handleClose}
+        />
+      )}
 
-      {/* Drawer */}
-      <div className="fixed right-0 top-0 z-50 flex h-full w-full max-w-2xl flex-col bg-[hsl(var(--background))] shadow-2xl">
+      {/* Drawer (or, as a page, a card in the normal flow) */}
+      <div
+        className={
+          isPage
+            ? "flex min-h-[calc(100vh-9rem)] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] shadow-[var(--shadow-xs)]"
+            : "fixed right-0 top-0 z-50 flex h-full w-full max-w-2xl flex-col bg-[hsl(var(--background))] shadow-2xl"
+        }
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[hsl(var(--border))] px-6 py-4">
           <div>
@@ -544,13 +600,24 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit(onSubmit)} className="flex flex-1 flex-col overflow-hidden">
+        <FormProvider {...(form as unknown as ReturnType<typeof useForm<ProfileFormValues>>)}>
+        <form onSubmit={handleSubmit(onSubmit, onInvalid as never)} className="flex flex-1 flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto px-6 py-5">
 
             {/* ── Personal Tab ── */}
             {activeTab === "personal" && (
               <div className="space-y-5">
                 <SectionHeader icon={User} title="Personal Information" />
+
+                <ProfilePhotoField
+                  name={`${watch("first_name") ?? ""} ${watch("last_name") ?? ""}`}
+                  currentUrl={currentAvatar}
+                  file={photoFile}
+                  removed={photoRemoved}
+                  onPick={(f) => { setPhotoFile(f); setPhotoRemoved(false); }}
+                  onRemove={() => { setPhotoFile(null); setPhotoRemoved(true); }}
+                  onError={(m) => toast.error(m)}
+                />
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -619,6 +686,8 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
                   <Label>Nationality</Label>
                   <Input placeholder="e.g. Pakistani, American" {...register("nationality")} />
                 </div>
+
+                <PersonalExtrasSection />
               </div>
             )}
 
@@ -750,6 +819,33 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
                   </p>
                 </div>
 
+                <div>
+                  <Label>Reports To</Label>
+                  <Select {...register("manager_id")}>
+                    <option value="">No manager</option>
+                    {managerOptions.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.full_name}{m.employee_code ? ` (${m.employee_code})` : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <Label>Probation Ends</Label>
+                    <Input type="date" {...register("probation_end_date")} />
+                  </div>
+                  <div>
+                    <Label>Confirmation Date</Label>
+                    <Input type="date" {...register("date_of_confirmation")} />
+                  </div>
+                  <div>
+                    <Label>Notice Period (days)</Label>
+                    <Input type="number" min="0" max="365" placeholder="30" {...register("notice_period_days")} />
+                  </div>
+                </div>
+
                 <div className="flex items-center gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
                   <input
                     type="checkbox"
@@ -793,44 +889,26 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
                   </div>
                 </div>
 
-                <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background-subtle))] p-4">
-                  <p className="text-xs text-[hsl(var(--foreground-muted))]">
-                    💡 Detailed salary structure (allowances, deductions, bonuses) can be configured from the Payroll module after the employee is created.
-                  </p>
-                </div>
+                <PayItemsSection
+                  currency={watch("currency") || "USD"}
+                  basic={Number(watch("current_salary")) || 0}
+                />
+
+                <BankInsuranceSection />
+              </div>
+            )}
+
+            {/* ── Background Tab ── */}
+            {activeTab === "background" && (
+              <div className="space-y-8">
+                <BackgroundSection />
+                <SkillsSection />
               </div>
             )}
 
             {/* ── Emergency Tab ── */}
-            {activeTab === "emergency" && (
-              <div className="space-y-5">
-                <SectionHeader icon={Phone} title="Emergency Contact" />
+            {activeTab === "emergency" && <EmergencyContactsSection />}
 
-                <div>
-                  <Label>Contact Name</Label>
-                  <Input placeholder="Jane Smith" {...register("emergency_name")} />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label>Phone Number</Label>
-                    <Input type="tel" placeholder="+1 234 567 8900" {...register("emergency_phone")} />
-                  </div>
-                  <div>
-                    <Label>Relationship</Label>
-                    <Select {...register("emergency_relationship")}>
-                      <option value="">Select</option>
-                      <option value="spouse">Spouse</option>
-                      <option value="parent">Parent</option>
-                      <option value="sibling">Sibling</option>
-                      <option value="child">Child</option>
-                      <option value="friend">Friend</option>
-                      <option value="other">Other</option>
-                    </Select>
-                  </div>
-                </div>
-              </div>
-            )}
             {/* ── Documents Tab ── */}
             {activeTab === "documents" && (
               isEdit ? (
@@ -875,9 +953,10 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
                 <button
                   type="button"
                   onClick={() => {
-                    const tabOrder = ["personal", "employment", "compensation", "emergency", "documents"];
+                    const tabOrder = tabs.map((t) => t.id);
                     const idx = tabOrder.indexOf(activeTab);
-                    setActiveTab(tabOrder[idx + 1] as typeof activeTab);
+                    const next = tabOrder[idx + 1];
+                    if (next) setActiveTab(next);
                   }}
                   className="rounded-md bg-[hsl(var(--secondary))] px-4 py-2 text-sm font-medium hover:bg-[hsl(var(--secondary-hover))] transition-colors"
                 >
@@ -907,6 +986,7 @@ export function EmployeeDrawer({ open, onClose, employeeId }: EmployeeDrawerProp
             </div>
           </div>
         </form>
+        </FormProvider>
       </div>
     </>
   );
