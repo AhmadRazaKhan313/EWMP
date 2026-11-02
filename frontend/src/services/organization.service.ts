@@ -20,11 +20,13 @@ export interface OrganizationSettings {
   currency: string;
   work_days: WorkDay[];
   standard_work_hours_per_day: number;
+  /** Path of the uploaded logo, or null. Read-only here: change it with the logo hooks. */
+  logo_url?: string | null;
 }
 
 /** Partial update: send only the fields that change. */
 export type OrganizationSettingsUpdate = Partial<
-  Omit<OrganizationSettings, "id" | "slug">
+  Omit<OrganizationSettings, "id" | "slug" | "logo_url">
 >;
 
 const orgKeys = {
@@ -50,5 +52,47 @@ export function useUpdateOrganizationSettings() {
       return data;
     },
     onSuccess: (data) => qc.setQueryData(orgKeys.settings(), data),
+  });
+}
+
+/** Same check the server does (it also checks the file's real bytes). */
+export const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp", "image/svg+xml"];
+export const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+
+export function logoProblem(file: { type: string; size: number }): string | null {
+  if (!LOGO_TYPES.includes(file.type)) return "Logo must be a PNG, JPEG, WebP or SVG image";
+  if (file.size > MAX_LOGO_BYTES) return "Logo must be 2 MB or smaller";
+  return null;
+}
+
+/** Tells the sidebar (which reads the public logo URL directly) to look again. */
+export const LOGO_CHANGED_EVENT = "ewmp:logo-changed";
+
+export function useUploadOrganizationLogo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      const { data } = await apiClient.post<OrganizationSettings>("/organization/logo", form, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      return data;
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(orgKeys.settings(), data);
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(LOGO_CHANGED_EVENT));
+    },
+  });
+}
+
+export function useDeleteOrganizationLogo() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => (await apiClient.delete<OrganizationSettings>("/organization/logo")).data,
+    onSuccess: (data) => {
+      qc.setQueryData(orgKeys.settings(), data);
+      if (typeof window !== "undefined") window.dispatchEvent(new Event(LOGO_CHANGED_EVENT));
+    },
   });
 }

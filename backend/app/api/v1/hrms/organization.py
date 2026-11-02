@@ -26,11 +26,12 @@ concerns.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +41,7 @@ from app.core.exceptions import NotFoundError
 from app.models.organization import Organization
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
+from app.services.organization_logo import read_logo, remove_logo, store_logo
 
 router = APIRouter(prefix="/organization", tags=["Organization"])
 
@@ -65,6 +67,7 @@ class OrganizationSettingsResponse(BaseModel):
     currency: str
     work_days: list[str]
     standard_work_hours_per_day: float
+    logo_url: str | None = None
 
 
 class OrganizationSettingsUpdate(BaseModel):
@@ -162,6 +165,7 @@ def _serialize(org: Organization) -> OrganizationSettingsResponse:
         timezone=org.timezone, currency=org.currency,
         work_days=list(work_days),
         standard_work_hours_per_day=_hours_from_settings(org_settings),
+        logo_url=org.logo_url,
     )
 
 
@@ -213,3 +217,62 @@ async def update_organization_settings(
 
     await db.flush()
     return _serialize(org)
+
+
+# ── Logo (O-01) ──────────────────────────────────────────────────────────────
+
+@router.post("/logo", response_model=OrganizationSettingsResponse, summary="Upload the organization logo")
+async def upload_organization_logo(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission("settings.manage")),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> OrganizationSettingsResponse:
+    """PNG, JPEG, WebP or SVG up to 2 MB. The file's real bytes are checked."""
+    org = await _load(db, tenant_id)
+    org.logo_url = await store_logo(org.id, await file.read())
+    await db.flush()
+    return _serialize(org)
+
+
+@router.delete("/logo", response_model=OrganizationSettingsResponse, summary="Remove the organization logo")
+async def delete_organization_logo(
+    current_user: User = Depends(require_permission("settings.manage")),
+    tenant_id: uuid.UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> OrganizationSettingsResponse:
+    org = await _load(db, tenant_id)
+    await remove_logo(org.id)
+    org.logo_url = None
+    await db.flush()
+    return _serialize(org)
+
+
+@router.get("/logo/{org_id}", summary="Serve an organization's logo image (public, like avatars)")
+async def serve_organization_logo(
+    org_id: uuid.UUID, request: Request, db: AsyncSession = Depends(get_db)
+) -> Response:
+    """Unauthenticated on purpose: a logo is not sensitive and has to work in a
+    plain <img src>. SVG is served with a CSP that forbids scripts and sandboxes
+    the document, and every type with nosniff."""
+    org = (
+        await db.execute(
+            select(Organization).where(Organization.id == org_id, Organization.is_deleted == False)  # noqa: E712
+        )
+    ).scalar_one_or_none()
+    found = await read_logo(org_id) if org is not None and org.logo_url else None
+    if found is None:
+        raise NotFoundError("Logo not found")
+    content, mime = found
+    # Revalidate on every use (cheap 304) so a replaced logo shows up
+    # immediately in the sidebar, which has no ?v= to bust the cache with.
+    etag = '"' + hashlib.sha256(content).hexdigest()[:32] + '"'
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    }
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=content, media_type=mime, headers=headers)
