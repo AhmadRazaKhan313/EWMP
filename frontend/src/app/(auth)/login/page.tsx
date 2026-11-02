@@ -19,6 +19,12 @@ const loginSchema = z.object({
 
 type LoginForm = z.infer<typeof loginSchema>;
 
+// Branding copy — edit these three lines to change the left panel.
+const BRAND_NAME = "Ahmad HRMS";
+const BRAND_TITLE = "Everything your workforce needs, in one place.";
+const BRAND_SUBTITLE =
+  "Attendance, payroll, leave and people management for your whole team.";
+
 export default function LoginPage() {
   const router = useRouter();
   const setUser = useAuthStore((s) => s.setUser);
@@ -51,51 +57,59 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-screen">
-      {/* Left panel — branding */}
-      <div className="hidden w-1/2 flex-col justify-between bg-[hsl(var(--foreground))] p-12 lg:flex">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10">
-            <Shield size={16} className="text-white" />
+    <div className="flex min-h-screen bg-[hsl(var(--background))]">
+      {/* Left panel — brand */}
+      <div className="relative hidden w-1/2 flex-col justify-between overflow-hidden border-r border-[hsl(var(--border))] bg-[hsl(var(--brand-25))] p-12 lg:flex">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(60%_50%_at_85%_10%,hsl(var(--brand-100)),transparent)]" />
+
+        <div className="relative flex items-center gap-2.5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[hsl(var(--primary))] shadow-[var(--shadow-sm)]">
+            <Shield size={18} className="text-[hsl(var(--primary-foreground))]" />
           </div>
-          <span className="font-heading text-lg font-semibold text-white">EWMP</span>
+          <span className="font-heading text-lg font-semibold text-[hsl(var(--foreground))]">
+            {BRAND_NAME}
+          </span>
         </div>
 
-        <div>
-          <blockquote className="space-y-4">
-            <p className="text-xl font-medium leading-relaxed text-white/90">
-              "The platform that brought our HR, IT, and operations teams onto a
-              single pane of glass. Payroll used to take three days — now it's
-              done in an afternoon."
-            </p>
-            <footer className="text-sm text-white/50">
-              — Chief People Officer, Meridian Technologies
-            </footer>
-          </blockquote>
+        <div className="relative max-w-md">
+          <h2 className="font-heading text-4xl font-semibold leading-tight tracking-tight text-[hsl(var(--foreground))]">
+            {BRAND_TITLE}
+          </h2>
+          <p className="mt-4 text-base leading-relaxed text-[hsl(var(--foreground-muted))]">
+            {BRAND_SUBTITLE}
+          </p>
         </div>
 
-        <div className="flex gap-6 text-xs text-white/40">
-          <span>SOC 2 Type II</span>
-          <span>ISO 27001</span>
-          <span>GDPR Compliant</span>
-        </div>
+        {/* Concentric rings, echoing the dashboard activity gauge */}
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 320 320"
+          className="pointer-events-none absolute -right-32 -top-32 h-[460px] w-[460px]"
+        >
+          <circle cx="160" cy="160" r="150" fill="none" stroke="hsl(var(--brand-100))" strokeWidth="18" />
+          <circle cx="160" cy="160" r="150" fill="none" stroke="hsl(var(--brand-700))" strokeWidth="18" strokeLinecap="round" strokeDasharray="620 943" transform="rotate(-90 160 160)" />
+          <circle cx="160" cy="160" r="112" fill="none" stroke="hsl(var(--brand-100))" strokeWidth="18" />
+          <circle cx="160" cy="160" r="112" fill="none" stroke="hsl(var(--brand-400))" strokeWidth="18" strokeLinecap="round" strokeDasharray="450 704" transform="rotate(-90 160 160)" />
+          <circle cx="160" cy="160" r="74" fill="none" stroke="hsl(var(--brand-100))" strokeWidth="18" />
+          <circle cx="160" cy="160" r="74" fill="none" stroke="hsl(var(--brand-600))" strokeWidth="18" strokeLinecap="round" strokeDasharray="280 465" transform="rotate(-90 160 160)" />
+        </svg>
       </div>
 
       {/* Right panel — form */}
-      <div className="flex flex-1 flex-col items-center justify-center px-6 py-12">
-        <div className="w-full max-w-sm">
+      <div className="flex flex-1 flex-col items-center justify-center bg-[hsl(var(--background-subtle))] px-6 py-12 lg:bg-[hsl(var(--background))]">
+        <div className="w-full max-w-sm rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-8 shadow-[var(--shadow-md)] lg:max-w-md lg:border-0 lg:p-0 lg:shadow-none">
           {/* Mobile logo */}
           <div className="mb-8 flex items-center gap-2 lg:hidden">
-            <Shield size={20} />
-            <span className="font-heading text-lg font-semibold">EWMP</span>
+            <Shield size={20} className="text-[hsl(var(--primary))]" />
+            <span className="font-heading text-lg font-semibold">{BRAND_NAME}</span>
           </div>
 
           <div className="mb-8">
-            <h1 className="font-heading text-2xl font-semibold tracking-tight">
-              Sign in to your account
+            <h1 className="font-heading text-3xl font-semibold tracking-tight">
+              Welcome back
             </h1>
             <p className="mt-1.5 text-sm text-[hsl(var(--foreground-muted))]">
-              Enter your email and password to continue
+              Sign in to continue to your account
             </p>
           </div>
 
@@ -115,7 +129,7 @@ export default function LoginPage() {
                 placeholder="you@company.com"
                 {...register("email")}
                 className={cn(
-                  "w-full rounded-md border bg-[hsl(var(--background))] px-3 py-2 text-sm outline-none transition-colors",
+                  "w-full rounded-lg border bg-[hsl(var(--background))] px-3.5 py-2.5 text-sm shadow-[var(--shadow-xs)] outline-none transition-colors",
                   "placeholder:text-[hsl(var(--foreground-muted))]",
                   "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
                   errors.email
@@ -141,7 +155,7 @@ export default function LoginPage() {
                 </label>
                 <Link
                   href="/forgot-password"
-                  className="text-xs text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]"
+                  className="text-xs font-medium text-[hsl(var(--primary))] hover:text-[hsl(var(--primary-hover))]"
                 >
                   Forgot password?
                 </Link>
@@ -154,7 +168,7 @@ export default function LoginPage() {
                   placeholder="••••••••"
                   {...register("password")}
                   className={cn(
-                    "w-full rounded-md border bg-[hsl(var(--background))] px-3 py-2 pr-10 text-sm outline-none transition-colors",
+                    "w-full rounded-lg border bg-[hsl(var(--background))] px-3.5 py-2.5 pr-10 text-sm shadow-[var(--shadow-xs)] outline-none transition-colors",
                     "placeholder:text-[hsl(var(--foreground-muted))]",
                     "focus:border-[hsl(var(--brand-300))] focus:ring-4 focus:ring-[hsl(var(--brand-100))]",
                     errors.password
@@ -182,7 +196,7 @@ export default function LoginPage() {
               type="submit"
               disabled={isLoading}
               className={cn(
-                "flex w-full items-center justify-center gap-2 rounded-md bg-[hsl(var(--primary))] px-4 py-2.5 text-sm font-medium text-[hsl(var(--primary-foreground))] transition-colors",
+                "flex w-full items-center justify-center gap-2 rounded-lg bg-[hsl(var(--primary))] px-4 py-2.5 text-sm font-semibold shadow-[var(--shadow-xs)] text-[hsl(var(--primary-foreground))] transition-colors",
                 "hover:bg-[hsl(var(--primary-hover))]",
                 "disabled:cursor-not-allowed disabled:opacity-60",
               )}
@@ -196,7 +210,7 @@ export default function LoginPage() {
             Don&apos;t have an account?{" "}
             <Link
               href="/register"
-              className="font-medium text-[hsl(var(--foreground))] underline-offset-4 hover:underline"
+              className="font-semibold text-[hsl(var(--primary))] underline-offset-4 hover:underline"
             >
               Start free trial
             </Link>

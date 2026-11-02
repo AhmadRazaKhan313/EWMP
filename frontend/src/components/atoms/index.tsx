@@ -4,6 +4,7 @@
  */
 
 import { cn } from "@/utils/cn";
+import { resolveMediaUrl } from "@/utils/media";
 
 // ── Badge ─────────────────────────────────────────────────────────────────────
 // Untitled UI "Badge, modern": white pill-square (6px radius) with a hairline
@@ -50,14 +51,13 @@ export function Badge({
 // ── Avatar + AvatarLabelGroup ─────────────────────────────────────────────────
 // Untitled UI "Avatar label group": round avatar (photo or initials) with a name
 // and optional supporting text beside it.
-type AvatarSize = "xs" | "sm" | "md" | "lg" | "xl";
+type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const avatarSizes: Record<AvatarSize, { box: string; text: string; name: string; sub: string }> = {
   xs: { box: "h-6 w-6",   text: "text-[10px]", name: "text-sm",  sub: "text-xs" },
   sm: { box: "h-8 w-8",   text: "text-xs",     name: "text-sm",  sub: "text-xs" },
   md: { box: "h-10 w-10", text: "text-sm",     name: "text-sm",  sub: "text-sm" },
   lg: { box: "h-12 w-12", text: "text-base",   name: "text-base", sub: "text-sm" },
-  xl: { box: "h-16 w-16", text: "text-xl",     name: "text-lg",  sub: "text-sm" },
 };
 
 function initialsOf(name: string): string {
@@ -79,7 +79,7 @@ export function Avatar({
   size?: AvatarSize;
   className?: string;
 }) {
-  const sz = avatarSizes[size] ?? avatarSizes.md;
+  const sz = avatarSizes[size];
   return (
     <span
       className={cn(
@@ -92,7 +92,7 @@ export function Avatar({
     >
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt={name} className="h-full w-full object-cover" />
+        <img src={resolveMediaUrl(src) ?? undefined} alt={name} className="h-full w-full object-cover" />
       ) : (
         initialsOf(name)
       )}
@@ -114,7 +114,7 @@ export function AvatarLabelGroup({
   size?: AvatarSize;
   className?: string;
 }) {
-  const sz = avatarSizes[size] ?? avatarSizes.md;
+  const sz = avatarSizes[size];
   return (
     <div className={cn("flex min-w-0 items-center gap-3", className)}>
       <Avatar name={name} src={src} size={size} />
@@ -240,26 +240,29 @@ export function StatusDot({
 
 // ── PageHeader ────────────────────────────────────────────────────────────────
 export function PageHeader({
+  breadcrumb,
   title,
   description,
   action,
-  breadcrumb,
 }: {
+  /** Optional trail shown above the title, e.g. <nav aria-label="Breadcrumb">…</nav>. */
+  breadcrumb?: React.ReactNode;
   title: string;
   description?: string;
   action?: React.ReactNode;
-  breadcrumb?: React.ReactNode;
 }) {
   return (
+    <div>
+    {breadcrumb && <div className="mb-3">{breadcrumb}</div>}
     <div className="flex items-start justify-between gap-4">
       <div>
-        {breadcrumb && <div className="mb-2">{breadcrumb}</div>}
         <h1 className="font-heading text-2xl font-semibold leading-8 text-[hsl(var(--foreground))]">{title}</h1>
         {description && (
           <p className="mt-1 text-base text-[hsl(var(--foreground-muted))]">{description}</p>
         )}
       </div>
       {action && <div className="shrink-0">{action}</div>}
+    </div>
     </div>
   );
 }
