@@ -54,30 +54,44 @@ async def _admin_user_ids_for_org(db: AsyncSession, tenant_id: UUID) -> list[UUI
     return recipient_ids
 
 
-async def notify_admins_of_device_alert(db: AsyncSession, device: Device, alert_count: int) -> None:
-    from app.models.workflows import Notification
+async def holder_label(db: AsyncSession, device: Device) -> str | None:
+    """"Sara Khan (EMP-0042)" for the employee who holds this device, or None when nobody does."""
+    if not device.assigned_employee_id:
+        return None
+    from app.models.employee import Employee
 
+    emp = (
+        await db.execute(
+            select(Employee).where(
+                Employee.id == device.assigned_employee_id, Employee.tenant_id == device.tenant_id
+            )
+        )
+    ).scalar_one_or_none()
+    if emp is None:
+        return None
+    name = f"{emp.user.first_name} {emp.user.last_name}".strip() if emp.user else ""
+    return f"{name} ({emp.employee_code})" if name else emp.employee_code
+
+
+async def notify_admins_of_device_alert(db: AsyncSession, device: Device, alert_count: int) -> None:
     recipient_ids = await _admin_user_ids_for_org(db, device.tenant_id)
     if not recipient_ids:
         return
 
-    device_label = device.device_name or device.hostname
+    # The person matters, not the machine: "Sara Khan (EMP-0042) triggered ...".
+    device_label = await holder_label(db, device) or "An unassigned device"
     title = "Flagged device activity" if alert_count == 1 else f"{alert_count} flagged device activities"
     body = f"{device_label} triggered {alert_count} activity alert(s). Review in Device Management."
 
-    for user_id in recipient_ids:
-        db.add(
-            Notification(
-                tenant_id=device.tenant_id,
-                user_id=user_id,
-                title=title,
-                body=body,
-                type="device_alert",
-                icon="alert-triangle",
-                action_url=f"/devices?device_id={device.id}&tab=alerts",
-                metadata_={"device_id": str(device.id), "alert_count": alert_count},
-            )
-        )
+    from app.services.notify import notify
+
+    # Honours each admin's Settings -> Notifications choice for "device_alert".
+    await notify(
+        db, device.tenant_id, recipient_ids, category="device_alert",
+        title=title, body=body, icon="alert-triangle",
+        action_url=f"/devices?device_id={device.id}&tab=alerts",
+        metadata={"device_id": str(device.id), "alert_count": alert_count},
+    )
     await db.flush()
 
     # Enqueue the existing worker task so email dispatch (or any other

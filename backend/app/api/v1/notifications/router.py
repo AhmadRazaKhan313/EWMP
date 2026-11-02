@@ -17,7 +17,8 @@ only ever touches the current user's own rows.
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -34,6 +35,55 @@ from app.schemas.notifications import (
 )
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
+
+
+class PreferenceItem(BaseModel):
+    key: str
+    label: str
+    description: str
+    enabled: bool
+
+
+class PreferencesOut(BaseModel):
+    items: list[PreferenceItem]
+
+
+class PreferencesIn(BaseModel):
+    # category -> on/off, e.g. {"leave": false}
+    preferences: dict[str, bool]
+
+
+def _preferences_out(user: User) -> PreferencesOut:
+    from app.services.notify import CATEGORIES, preference_map
+
+    current = preference_map(user)
+    return PreferencesOut(items=[
+        PreferenceItem(key=k, label=label, description=desc, enabled=current[k])
+        for k, (label, desc) in CATEGORIES.items()
+    ])
+
+
+# NOTE: the fixed "/preferences" routes come before "/{notification_id}/read".
+@router.get("/preferences", response_model=PreferencesOut, summary="My notification on/off choices")
+async def get_preferences(current_user: User = Depends(get_current_user)) -> PreferencesOut:
+    return _preferences_out(current_user)
+
+
+@router.put("/preferences", response_model=PreferencesOut, summary="Change my notification on/off choices")
+async def update_preferences(
+    body: PreferencesIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> PreferencesOut:
+    from app.services.notify import set_preferences
+
+    try:
+        set_preferences(current_user, body.preferences)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    db.add(current_user)
+    await db.flush()
+    return _preferences_out(current_user)
 
 
 def _serialize(n: Notification) -> NotificationItemSchema:
