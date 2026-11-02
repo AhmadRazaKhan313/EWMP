@@ -13,3 +13,5 @@ from app.models.workflows import WorkflowDefinition, WorkflowRun, WorkflowRunLog
 from app.models.recruitment import JobPosting, Applicant  # noqa: F401
 from app.models.performance import Goal, PerformanceReview  # noqa: F401
 from app.models.helpdesk import SupportTicket  # noqa: F401
+from app.models.onboarding import OnboardingTemplate, OnboardingTemplateTask, Offer, OnboardingCase, OnboardingCaseTask, OnboardingCaseDocument  # noqa: F401
+from app.models.break_policy import BreakPolicy, BreakOverride, BreakUnlockRequest  # noqa: F401

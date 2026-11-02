@@ -30,7 +30,10 @@ PERMISSION_REGISTRY: list[dict] = [
     {"resource": "attendance", "action": "view",        "label": "View Attendance",           "category": "Attendance",         "is_sensitive": False},
     {"resource": "attendance", "action": "view_own",    "label": "View Own Attendance",       "category": "Attendance",         "is_sensitive": False},
     {"resource": "attendance", "action": "regularize",  "label": "Regularize Attendance",     "category": "Attendance",         "is_sensitive": False},
+    {"resource": "attendance", "action": "edit",        "label": "Edit / Delete Attendance",     "category": "Attendance",         "is_sensitive": True},
     {"resource": "attendance", "action": "export",      "label": "Export Attendance",         "category": "Attendance",         "is_sensitive": False},
+    {"resource": "shifts",     "action": "manage",      "label": "Manage Shifts",             "category": "Attendance",         "is_sensitive": False},
+    {"resource": "holidays",   "action": "manage",      "label": "Manage Holidays",           "category": "Attendance",         "is_sensitive": False},
 
     # ── Leave ─────────────────────────────────────────────────────
     {"resource": "leave", "action": "view",          "label": "View Leave Requests",       "category": "Leave Management",   "is_sensitive": False},
@@ -56,6 +59,17 @@ PERMISSION_REGISTRY: list[dict] = [
     {"resource": "recruitment", "action": "view",       "label": "View Recruitment",          "category": "Recruitment",        "is_sensitive": False},
     {"resource": "recruitment", "action": "manage",     "label": "Manage Jobs & Applicants",  "category": "Recruitment",        "is_sensitive": False},
     {"resource": "recruitment", "action": "interview",  "label": "Conduct Interviews",        "category": "Recruitment",        "is_sensitive": False},
+
+    # ── Onboarding & offers ───────────────────────────────────────
+    {"resource": "offers",     "action": "manage",       "label": "Create & Send Offers",        "category": "Onboarding",         "is_sensitive": True},
+    {"resource": "offers",     "action": "approve",      "label": "Approve Offers",              "category": "Onboarding",         "is_sensitive": True},
+    {"resource": "onboarding", "action": "view",         "label": "View Onboarding",             "category": "Onboarding",         "is_sensitive": False},
+    {"resource": "onboarding", "action": "manage",       "label": "Manage Onboarding & Templates", "category": "Onboarding",       "is_sensitive": False},
+    {"resource": "onboarding", "action": "view_own",     "label": "Complete My Onboarding Tasks", "category": "Onboarding",        "is_sensitive": False},
+
+    # ── Break-time lock ───────────────────────────────────────────────
+    {"resource": "break", "action": "manage",  "label": "Manage Break Schedule",         "category": "Attendance", "is_sensitive": False},
+    {"resource": "break", "action": "approve", "label": "Approve Break Unlock Requests", "category": "Attendance", "is_sensitive": False},
 
     # ── Performance ───────────────────────────────────────────────
     {"resource": "performance", "action": "view",       "label": "View Performance",          "category": "Performance",        "is_sensitive": False},

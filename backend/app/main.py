@@ -78,13 +78,17 @@ def _register_routers(app: FastAPI) -> None:
     from app.api.v1.hrms.leave import router as leave_router
     from app.api.v1.hrms.payroll import router as payroll_router
     from app.api.v1.hrms.recruitment import router as recruitment_router
+    from app.api.v1.hrms.onboarding import router as onboarding_hr_router
+    from app.api.v1.hrms.onboarding_public import router as onboarding_public_router
     from app.api.v1.hrms.performance import router as performance_router
     from app.api.v1.hrms.assets import router as assets_router
     from app.api.v1.hrms.helpdesk import router as helpdesk_router
     from app.api.v1.hrms.dashboard import router as dashboard_router
     from app.api.v1.hrms.work_sessions import router as work_sessions_router
+    from app.api.v1.hrms.break_lock import router as break_lock_router
     from app.api.v1.devices.devices import router as devices_router
     from app.api.v1.ai.chat import router as ai_router
+    from app.api.v1.reports.router import router as reports_router
     from app.api.v1.webhooks.router import router as webhooks_router
     from app.api.v1.notifications.router import router as notifications_router
 
@@ -94,9 +98,9 @@ def _register_routers(app: FastAPI) -> None:
         employees_router, employee_documents_router, roles_router, departments_router, branches_router,
         teams_router, designations_router, shifts_router, holidays_router,
         attendance_router, leave_router, payroll_router,
-        recruitment_router, performance_router,
-        assets_router, helpdesk_router, dashboard_router, work_sessions_router,
-        devices_router, ai_router, webhooks_router, notifications_router,
+        recruitment_router, onboarding_hr_router, onboarding_public_router, performance_router,
+        assets_router, helpdesk_router, dashboard_router, work_sessions_router, break_lock_router,
+          devices_router, ai_router, reports_router, webhooks_router, notifications_router,
     ]:
         app.include_router(r, prefix=prefix)
 
