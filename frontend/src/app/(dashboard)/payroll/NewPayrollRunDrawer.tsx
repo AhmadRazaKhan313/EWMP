@@ -35,7 +35,8 @@ function defaultPeriod() {
   return { start: iso(start), end: iso(end), pay: iso(end) };
 }
 
-export function NewPayrollRunDrawer({ onClose }: { onClose: () => void }) {
+export function NewPayrollRunDrawer({ onClose, variant = "drawer" }: { onClose: () => void; variant?: "drawer" | "page" }) {
+  const isPage = variant === "page";
   const router = useRouter();
   const qc = useQueryClient();
   const period = defaultPeriod();
@@ -64,8 +65,10 @@ export function NewPayrollRunDrawer({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />
-      <div className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col bg-[hsl(var(--background))] shadow-2xl">
+      {!isPage && <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />}
+      <div className={isPage
+        ? "flex w-full max-w-2xl flex-col rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] shadow-[var(--shadow-xs)]"
+        : "fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col bg-[hsl(var(--background))] shadow-2xl"}>
         <div className="flex items-center justify-between border-b border-[hsl(var(--border))] px-6 py-4">
           <div>
             <h2 className="font-heading text-lg font-semibold">New Payroll Run</h2>

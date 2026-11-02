@@ -168,9 +168,9 @@ export default function PayrollRunDetailPage() {
         <ArrowLeft size={14} /> Back to Payroll
       </button>
 
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
             <h1 className="font-heading text-xl font-semibold tracking-tight">{run.name}</h1>
             <Badge variant={cfg.variant}>{cfg.label}</Badge>
           </div>
@@ -178,7 +178,8 @@ export default function PayrollRunDetailPage() {
             {formatDate(run.period_start)} – {formatDate(run.period_end)} &nbsp;·&nbsp; Pay date {formatDate(run.pay_date)}
           </p>
         </div>
-        <div className="flex gap-2">
+        {/* Wraps onto a second line on narrow screens instead of pushing buttons off the right edge. */}
+        <div className="flex flex-wrap items-center justify-end gap-2 [&_button]:whitespace-nowrap">
           <Button variant="outline" size="sm" icon={<History size={13} />} onClick={() => setShowAuditLog(true)}>
             Audit Log
           </Button>
@@ -195,7 +196,7 @@ export default function PayrollRunDetailPage() {
               </Button>
             </>
           )}
-          {(run.status === "approved" || run.status === "locked") && (
+          {(run.status === "approved" || run.status === "locked" || run.status === "paid") && (
             <Button variant="outline" size="sm" icon={<Banknote size={13} />} onClick={() => setShowPaymentBatch(true)}>
               Payment Batch
             </Button>
@@ -229,7 +230,7 @@ export default function PayrollRunDetailPage() {
       </div>
 
       {run.status !== "draft" && (
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
           <Card>
             <div className="flex items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[hsl(var(--info-subtle))]">

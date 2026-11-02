@@ -4,6 +4,7 @@ import { useState } from "react";
 import { X, TrendingUp, TrendingDown, Building2, Download, Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import apiClient from "@/services/api-client";
+import { OrgLogoImage } from "@/components/organization/OrgLogoImage";
 import { Badge } from "@/components/atoms";
 import { downloadPayslipPdf } from "@/services/payroll.service";
 
@@ -68,13 +69,16 @@ export function PayslipDrawer({ payslipId, onClose }: { payslipId: string; onClo
       <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm" onClick={onClose} />
       <div className="fixed right-0 top-0 z-50 flex h-full w-full max-w-lg flex-col bg-[hsl(var(--background))] shadow-2xl">
         <div className="flex items-center justify-between border-b border-[hsl(var(--border))] px-6 py-4">
-          <div>
+          <div className="flex items-center gap-3">
+            <OrgLogoImage className="h-9 max-w-[96px] object-contain" />
+            <div>
             <h2 className="font-heading text-lg font-semibold">{data?.employee_name ?? "Payslip"}</h2>
             {data && (
               <p className="text-xs text-[hsl(var(--foreground-muted))]">
                 {data.employee_code} &nbsp;·&nbsp; {data.run.name}
               </p>
             )}
+            </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
             {/* The PDF endpoint has existed since payslips did; this
