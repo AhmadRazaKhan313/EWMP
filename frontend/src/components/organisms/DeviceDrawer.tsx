@@ -5,7 +5,7 @@ import { X, Monitor, Cpu, HardDrive, Wifi, User, AlertTriangle, Lock, RotateCcw,
   Power, MessageSquare, Trash2, Loader2, Activity, Camera, RefreshCw, ShieldAlert, Check, ShieldCheck,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Badge } from "@/components/atoms";
+import { Avatar, Badge } from "@/components/atoms";
 import { useEmployees } from "@/services/employee.service";
 import {
   useDevice, useDeviceMetrics, useDeviceProcesses, useAssignDevice, useUnassignDevice,
@@ -132,8 +132,15 @@ export function DeviceDrawer({ deviceId, onClose }: { deviceId: string; onClose:
               <Monitor size={16} className="text-[hsl(var(--foreground-subtle))]" />
             </div>
             <div>
-              <h2 className="font-heading text-sm font-semibold">{device?.device_name ?? device?.hostname ?? "Device"}</h2>
-              <p className="font-mono text-[11px] text-[hsl(var(--foreground-muted))]">{device?.hostname}</p>
+              <h2 className="font-heading text-sm font-semibold">
+                {device?.assigned_employee?.full_name ?? device?.device_name ?? device?.hostname ?? "Device"}
+              </h2>
+              <p className="text-[11px] text-[hsl(var(--foreground-muted))]">
+                {device?.assigned_employee
+                  ? [device.assigned_employee.designation, device.assigned_employee.department].filter(Boolean).join(" · ") ||
+                    device.assigned_employee.employee_code
+                  : <span className="font-mono">{device?.hostname}</span>}
+              </p>
             </div>
           </div>
           <button onClick={onClose} className="text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]">
@@ -219,10 +226,28 @@ export function DeviceDrawer({ deviceId, onClose }: { deviceId: string; onClose:
                       <User size={12} /> ASSIGNED TO
                     </h4>
                     {device.assigned_employee ? (
-                      <div className="flex items-center justify-between rounded-lg border border-[hsl(var(--border))] p-3">
-                        <div>
-                          <p className="text-sm font-medium">{device.assigned_employee.full_name}</p>
-                          <p className="text-xs text-[hsl(var(--foreground-muted))]">{device.assigned_employee.employee_code}</p>
+                      <div className="flex items-start justify-between gap-3 rounded-lg border border-[hsl(var(--border))] p-3">
+                        <div className="flex min-w-0 items-start gap-3">
+                          <Avatar
+                            name={device.assigned_employee.full_name ?? device.assigned_employee.employee_code}
+                            src={device.assigned_employee.avatar_url}
+                            size="md"
+                          />
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium">{device.assigned_employee.full_name}</p>
+                            <p className="text-xs text-[hsl(var(--foreground-muted))]">
+                              {[device.assigned_employee.employee_code, device.assigned_employee.designation].filter(Boolean).join(" · ")}
+                            </p>
+                            {device.assigned_employee.department && (
+                              <p className="text-xs text-[hsl(var(--foreground-muted))]">{device.assigned_employee.department}</p>
+                            )}
+                            {device.assigned_employee.email && (
+                              <p className="truncate text-xs text-[hsl(var(--foreground-muted))]">{device.assigned_employee.email}</p>
+                            )}
+                            {device.assigned_employee.phone && (
+                              <p className="text-xs text-[hsl(var(--foreground-muted))]">{device.assigned_employee.phone}</p>
+                            )}
+                          </div>
                         </div>
                         <button
                           onClick={() => unassignMutation.mutate()}

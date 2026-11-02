@@ -1,115 +1,15 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Monitor, Wifi, WifiOff, Shield, AlertTriangle, Plus, Copy, Check, X, Loader2, ShieldAlert } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { Monitor, Wifi, WifiOff, UserX, ShieldAlert, Lock, RotateCcw, Power } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import apiClient from "@/services/api-client";
 import { DataTable } from "@/components/molecules/DataTable";
-import { Badge, Button, Card, EmptyState, PageHeader, StatusDot } from "@/components/atoms";
+import { AvatarLabelGroup, Button, Card, EmptyState, PageHeader, StatusDot } from "@/components/atoms";
 import type { Device } from "@/types";
-
-// ── Enrollment modal ───────────────────────────────────────────────────────
-// Fetches a real org-scoped enrollment token from the backend so an admin
-// can actually set up the agent/ewmp_agent.py script on a machine, instead
-// of the "Enroll Device" button just being decorative.
-function EnrollDeviceModal({ onClose }: { onClose: () => void }) {
-  const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    apiClient
-      .get<{ enrollment_token: string }>("/devices/enrollment-token")
-      .then(({ data }) => setToken(data.enrollment_token))
-      .catch(() => toast.error("Couldn't generate an enrollment token — check your permissions."))
-      .finally(() => setLoading(false));
-  }, []);
-
-  function copy() {
-    if (!token) return;
-    navigator.clipboard.writeText(token);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
-  return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-lg rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="font-heading text-base font-semibold">Enroll a Device</h3>
-          <button onClick={onClose} className="text-[hsl(var(--foreground-muted))] hover:text-[hsl(var(--foreground))]">
-            <X size={18} />
-          </button>
-        </div>
-
-        {loading ? (
-          <div className="flex items-center gap-2 py-6 text-sm text-[hsl(var(--foreground-muted))]">
-            <Loader2 size={16} className="animate-spin" /> Generating enrollment token…
-          </div>
-        ) : token ? (
-          <div className="space-y-3">
-            <p className="text-sm text-[hsl(var(--foreground-muted))]">
-              Copy this token, then on the target machine run the desktop agent
-              (see <code className="text-xs">agent/README.md</code>):
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 truncate rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--secondary))] px-3 py-2 text-xs">
-                {token}
-              </code>
-              <button
-                onClick={copy}
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-[hsl(var(--border))] hover:bg-[hsl(var(--accent))]"
-              >
-                {copied ? <Check size={14} className="text-[hsl(var(--success))]" /> : <Copy size={14} />}
-              </button>
-            </div>
-            <pre className="overflow-x-auto rounded-md bg-[hsl(var(--secondary))] p-3 text-xs">
-{`python ewmp_agent.py --server ${typeof window !== "undefined" ? window.location.origin.replace("3000", "8000") : "http://localhost:8000"} \\
-  --enroll-token ${token.slice(0, 16)}...`}
-            </pre>
-            <p className="text-xs text-[hsl(var(--foreground-muted))]">
-              This token is valid for a year and works for any number of machines in your organization.
-            </p>
-          </div>
-        ) : (
-          <p className="text-sm text-[hsl(var(--destructive))]">Failed to generate a token. Check your permissions.</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function HealthBar({ score }: { score: number | null }) {
-  if (score === null) return <span className="text-[hsl(var(--foreground-muted))]">—</span>;
-  const color = score >= 80 ? "bg-[hsl(var(--success))]" : score >= 50 ? "bg-[hsl(var(--warning))]" : "bg-[hsl(var(--destructive))]";
-  return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-20 overflow-hidden rounded-full bg-[hsl(var(--secondary))]">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${score}%` }} />
-      </div>
-      <span className="font-mono text-xs text-[hsl(var(--foreground-subtle))]">{score}</span>
-    </div>
-  );
-}
-
-function MetricBar({ value, label }: { value: number | null; label: string }) {
-  if (value === null) return <span className="text-[hsl(var(--foreground-muted))]">—</span>;
-  const color = value > 90 ? "bg-[hsl(var(--destructive))]" : value > 70 ? "bg-[hsl(var(--warning))]" : "bg-[hsl(var(--success))]";
-  return (
-    <div className="flex items-center gap-1.5">
-      <div className="h-1.5 w-14 overflow-hidden rounded-full bg-[hsl(var(--secondary))]">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${value}%` }} />
-      </div>
-      <span className="font-mono text-xs">{value}%</span>
-    </div>
-  );
-}
 
 const statusDotColor: Record<string, "green" | "red" | "yellow" | "gray"> = {
   online:          "green",
@@ -120,104 +20,174 @@ const statusDotColor: Record<string, "green" | "red" | "yellow" | "gray"> = {
   decommissioned:  "gray",
 };
 
-const columns: ColumnDef<Device, unknown>[] = [
-  {
-    header: "Device",
-    accessorFn: (r) => r.hostname,
-    cell: ({ row }) => {
-      const d = row.original;
-      return (
-        <div>
-          <div className="flex items-center gap-2">
-            <StatusDot color={statusDotColor[d.status] ?? "gray"} pulse={d.status === "online"} />
-            <span className="font-medium">{d.device_name ?? d.hostname}</span>
-          </div>
-          <p className="ml-4 font-mono text-[11px] text-[hsl(var(--foreground-muted))]">{d.hostname}</p>
-        </div>
-      );
-    },
-    size: 200,
-  },
-  {
-    header: "OS",
-    accessorKey: "os_name",
-    cell: ({ row }) => (
-      <div>
-        <p className="text-sm capitalize">{row.original.os_type}</p>
-        <p className="text-xs text-[hsl(var(--foreground-muted))]">{row.original.os_version}</p>
-      </div>
-    ),
-  },
-  {
-    header: "Health",
-    accessorKey: "health_score",
-    cell: ({ getValue }) => <HealthBar score={getValue<number | null>()} />,
-  },
-  {
-    header: "CPU",
-    accessorKey: "cpu_usage_percent",
-    cell: ({ getValue }) => <MetricBar value={getValue<number | null>()} label="CPU" />,
-  },
-  {
-    header: "RAM",
-    accessorKey: "ram_usage_percent",
-    cell: ({ getValue }) => <MetricBar value={getValue<number | null>()} label="RAM" />,
-  },
-  {
-    header: "IP",
-    accessorKey: "local_ip",
-    cell: ({ row }) => (
-      <div className="font-mono text-xs text-[hsl(var(--foreground-subtle))]">
-        <div>{row.original.local_ip ?? "—"}</div>
-        <div className="text-[hsl(var(--foreground-muted))]">{row.original.public_ip ?? ""}</div>
-      </div>
-    ),
-  },
-  {
-    header: "Last Seen",
-    accessorKey: "last_seen_at",
-    cell: ({ getValue }) => {
-      const v = getValue<string | null>();
-      if (!v) return <span className="text-[hsl(var(--foreground-muted))]">Never</span>;
-      const diff = Math.floor((Date.now() - new Date(v).getTime()) / 1000);
-      const label = diff < 60 ? `${diff}s ago` : diff < 3600 ? `${Math.floor(diff / 60)}m ago` : diff < 86400 ? `${Math.floor(diff / 3600)}h ago` : `${Math.floor(diff / 86400)}d ago`;
-      return <span className="text-xs text-[hsl(var(--foreground-subtle))]">{label}</span>;
-    },
-  },
-];
+function lastSeen(v: string | null): string {
+  if (!v) return "Never";
+  const diff = Math.floor((Date.now() - new Date(v).getTime()) / 1000);
+  return diff < 60 ? `${diff}s ago` : diff < 3600 ? `${Math.floor(diff / 60)}m ago` : diff < 86400 ? `${Math.floor(diff / 3600)}h ago` : `${Math.floor(diff / 86400)}d ago`;
+}
+
+type BulkAction = "lock" | "restart" | "shutdown";
+const BULK_LABEL: Record<BulkAction, string> = { lock: "Lock", restart: "Restart", shutdown: "Shut down" };
 
 export default function DevicesPage() {
   const router = useRouter();
-  const [showEnroll, setShowEnroll] = useState(false);
+  const queryClient = useQueryClient();
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState<BulkAction | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ["devices"],
     queryFn: async () => {
-      const { data } = await apiClient.get<{ items: Device[]; total: number }>("/devices");
+      const { data } = await apiClient.get<{ items: Device[]; total: number }>("/devices", {
+        params: { page_size: 200 },
+      });
       return data;
     },
     refetchInterval: 30_000, // Live refresh every 30s
   });
 
-  const devices = data?.items ?? [];
-  const online  = devices.filter((d) => d.status === "online").length;
-  const offline = devices.filter((d) => d.status === "offline").length;
-  const alerts  = devices.filter((d) => (d.health_score ?? 100) < 50).length;
+  // Old links /devices?device_id=…&tab=alerts (alerts page, notification bell) -> the device page.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const id = q.get("device_id");
+    if (id) router.replace(`/devices/${id}${q.get("tab") ? `?tab=${q.get("tab")}` : ""}`);
+  }, [router]);
+
+  const devices = useMemo(() => data?.items ?? [], [data]);
+  const online     = devices.filter((d) => d.status === "online").length;
+  const offline    = devices.filter((d) => d.status !== "online").length;
+  const unassigned = devices.filter((d) => !d.assigned_employee).length;
+
+  function toggle(id: string) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  const allChecked = devices.length > 0 && devices.every((d) => checked.has(d.id));
+
+  async function runBulk(action: BulkAction) {
+    const ids = devices.filter((d) => checked.has(d.id)).map((d) => d.id);
+    if (ids.length === 0) return;
+    const label = BULK_LABEL[action];
+    const who = ids.length === 1 ? "this employee's computer" : `${ids.length} computers`;
+    if (!window.confirm(`${label} ${who}? It will apply on each computer's next check-in (within ~60s).`)) return;
+    setBusy(action);
+    const results = await Promise.allSettled(ids.map((id) => apiClient.post(`/devices/${id}/actions/${action}`)));
+    setBusy(null);
+    const ok = results.filter((r) => r.status === "fulfilled").length;
+    const failed = results.length - ok;
+    if (ok) toast.success(`${label} queued for ${ok} computer${ok === 1 ? "" : "s"}`);
+    if (failed) toast.error(`${failed} could not be queued — check your permissions`);
+    setChecked(new Set());
+    void queryClient.invalidateQueries({ queryKey: ["devices"] });
+  }
+
+  const columns = useMemo<ColumnDef<Device, unknown>[]>(
+    () => [
+      {
+        id: "select",
+        header: () => (
+          <input
+            type="checkbox"
+            aria-label="Select all"
+            checked={allChecked}
+            onChange={() => setChecked(allChecked ? new Set() : new Set(devices.map((d) => d.id)))}
+          />
+        ),
+        cell: ({ row }) => (
+          <span onClick={(e) => e.stopPropagation()}>
+            <input
+              type="checkbox"
+              aria-label={`Select ${row.original.assigned_employee?.full_name ?? row.original.hostname}`}
+              checked={checked.has(row.original.id)}
+              onChange={() => toggle(row.original.id)}
+            />
+          </span>
+        ),
+        enableSorting: false,
+        size: 40,
+      },
+      {
+        header: "Employee",
+        accessorFn: (r) =>
+          [r.assigned_employee?.full_name, r.assigned_employee?.employee_code, r.assigned_employee?.department, r.hostname]
+            .filter(Boolean)
+            .join(" "),
+        cell: ({ row }) => {
+          const d = row.original;
+          const e = d.assigned_employee;
+          return e ? (
+            <AvatarLabelGroup
+              name={e.full_name ?? e.employee_code}
+              subtext={e.employee_code}
+              src={e.avatar_url}
+              size="sm"
+            />
+          ) : (
+            <div>
+              <p className="text-sm font-medium text-[hsl(var(--foreground-muted))]">Unassigned</p>
+              <p className="font-mono text-[11px] text-[hsl(var(--foreground-muted))]">{d.hostname}</p>
+            </div>
+          );
+        },
+        size: 240,
+      },
+      {
+        header: "Department",
+        accessorFn: (r) => r.assigned_employee?.department ?? "",
+        cell: ({ getValue }) => <span className="text-sm">{getValue<string>() || "—"}</span>,
+      },
+      {
+        header: "Designation",
+        accessorFn: (r) => r.assigned_employee?.designation ?? "",
+        cell: ({ getValue }) => <span className="text-sm">{getValue<string>() || "—"}</span>,
+      },
+      {
+        header: "Status",
+        accessorKey: "status",
+        cell: ({ row }) => (
+          <div className="flex items-center gap-2">
+            <StatusDot color={statusDotColor[row.original.status] ?? "gray"} pulse={row.original.status === "online"} />
+            <span className="text-sm capitalize">{row.original.status}</span>
+          </div>
+        ),
+      },
+      {
+        header: "Last Seen",
+        accessorKey: "last_seen_at",
+        cell: ({ getValue }) => <span className="text-xs text-[hsl(var(--foreground-subtle))]">{lastSeen(getValue<string | null>())}</span>,
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [checked, allChecked, devices],
+  );
+
+  const n = checked.size;
+  const count = n > 0 ? ` (${n})` : "";
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Device Management"
-        description="Monitor and manage your entire device fleet in real time."
+        description="Lock, restart or shut down your team's computers. Tick the employees, then use the buttons."
         action={
-          <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              icon={<ShieldAlert size={15} />}
-              onClick={() => router.push("/devices/alerts")}
-            >
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" icon={<Lock size={15} />} disabled={n === 0 || busy !== null} onClick={() => runBulk("lock")}>
+              Lock{count}
+            </Button>
+            <Button variant="secondary" icon={<RotateCcw size={15} />} disabled={n === 0 || busy !== null} onClick={() => runBulk("restart")}>
+              Restart{count}
+            </Button>
+            <Button variant="destructive" icon={<Power size={15} />} disabled={n === 0 || busy !== null} onClick={() => runBulk("shutdown")}>
+              Shutdown{count}
+            </Button>
+            <span className="mx-1 hidden h-6 w-px bg-[hsl(var(--border))] sm:block" />
+            <Button variant="secondary" icon={<ShieldAlert size={15} />} onClick={() => router.push("/devices/alerts")}>
               View Alerts
             </Button>
-            <Button icon={<Plus size={15} />} onClick={() => setShowEnroll(true)}>Enroll Device</Button>
           </div>
         }
       />
@@ -248,33 +218,40 @@ export default function DevicesPage() {
         <Card>
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[hsl(var(--warning-subtle))]">
-              <AlertTriangle size={16} className="text-[hsl(var(--warning))]" />
+              <UserX size={16} className="text-[hsl(var(--warning))]" />
             </div>
             <div>
-              <p className="text-2xl font-semibold font-heading">{alerts}</p>
-              <p className="text-xs text-[hsl(var(--foreground-muted))]">Health Alerts</p>
+              <p className="text-2xl font-semibold font-heading">{unassigned}</p>
+              <p className="text-xs text-[hsl(var(--foreground-muted))]">Not assigned to anyone</p>
             </div>
           </div>
         </Card>
       </div>
 
+      {n > 0 && (
+        <div className="flex items-center justify-between rounded-lg border border-[hsl(var(--brand-200))] bg-[hsl(var(--accent))] px-4 py-2 text-sm">
+          <span>{n} selected</span>
+          <button onClick={() => setChecked(new Set())} className="text-xs font-semibold text-[hsl(var(--primary))] hover:underline">
+            Clear selection
+          </button>
+        </div>
+      )}
+
       <DataTable
         data={devices}
         columns={columns}
         isLoading={isLoading}
-        searchPlaceholder="Search by hostname or IP…"
+        searchPlaceholder="Search employee or department…"
         onRowClick={(row) => router.push(`/devices/${row.id}`)}
         emptyState={
           <EmptyState
             icon={Monitor}
-            title="No devices enrolled"
-            description="Install the EWMP desktop agent on employee machines to start monitoring."
-            action={<Button icon={<Plus size={14} />} onClick={() => setShowEnroll(true)}>Enroll First Device</Button>}
+            title="No computers yet"
+            description="When an employee logs in to the desktop app, their computer appears here."
           />
         }
       />
 
-      {showEnroll && <EnrollDeviceModal onClose={() => setShowEnroll(false)} />}
     </div>
   );
 }

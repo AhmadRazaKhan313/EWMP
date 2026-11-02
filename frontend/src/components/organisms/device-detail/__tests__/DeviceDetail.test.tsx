@@ -30,22 +30,23 @@ vi.mock("@/services/devices.service", () => ({
 }));
 
 import { DeviceDetail } from "../DeviceDetail";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 describe("DeviceDetail page", () => {
   beforeEach(() => { push.mockClear(); decommission.mockClear(); });
 
   it("shows the device and switches sections", () => {
-    render(<DeviceDetail deviceId="d1" />);
-    expect(screen.getByRole("heading", { name: "Front desk" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Device overview" })).toBeInTheDocument();
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><DeviceDetail deviceId="d1" /></QueryClientProvider>);
+    expect(screen.getByRole("heading", { name: "Unassigned computer" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Employee overview" })).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("Alerts section"));
-    expect(screen.getByRole("heading", { name: "Flagged activity" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Alerts" })).toBeInTheDocument();
     expect(screen.getByText(/No flagged activity/)).toBeInTheDocument();
   });
 
   it("decommission confirms, calls the API and returns to the list", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    render(<DeviceDetail deviceId="d1" />);
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><DeviceDetail deviceId="d1" /></QueryClientProvider>);
     fireEvent.click(screen.getByRole("button", { name: /decommission/i }));
     await waitFor(() => expect(push).toHaveBeenCalledWith("/devices"));
     expect(decommission).toHaveBeenCalled();
@@ -53,7 +54,7 @@ describe("DeviceDetail page", () => {
 
   it("does nothing when decommission is cancelled", () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
-    render(<DeviceDetail deviceId="d1" />);
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><DeviceDetail deviceId="d1" /></QueryClientProvider>);
     fireEvent.click(screen.getByRole("button", { name: /decommission/i }));
     expect(decommission).not.toHaveBeenCalled();
   });

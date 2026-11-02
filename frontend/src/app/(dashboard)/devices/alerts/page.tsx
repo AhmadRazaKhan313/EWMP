@@ -180,7 +180,7 @@ export default function DeviceAlertsInboxPage() {
 function AlertRow({
   alert, isSelected, onToggleSelect, onViewDevice,
 }: {
-  alert: { id: string; device_id: string; device_name: string; alert_type: string; matched_term: string; detail: string; occurred_at: string; is_acknowledged: boolean };
+  alert: { id: string; device_id: string; device_name: string; employee_name?: string | null; employee_code?: string | null; department?: string | null; alert_type: string; matched_term: string; detail: string; occurred_at: string; is_acknowledged: boolean };
   isSelected: boolean;
   onToggleSelect: () => void;
   onViewDevice: () => void;
@@ -202,8 +202,22 @@ function AlertRow({
       }`}
     >
       <input type="checkbox" checked={isSelected} onChange={onToggleSelect} />
-      <button onClick={onViewDevice} className="flex-1 truncate text-left font-medium hover:underline">
-        {alert.device_name}
+      <button onClick={onViewDevice} className="min-w-0 flex-1 text-left hover:underline">
+        {alert.employee_name ? (
+          <>
+            <span className="block truncate font-medium">
+              {alert.employee_name}
+              {alert.employee_code && (
+                <span className="ml-1.5 font-mono text-xs font-normal text-[hsl(var(--foreground-muted))]">{alert.employee_code}</span>
+              )}
+            </span>
+            {alert.department && (
+              <span className="block truncate text-xs text-[hsl(var(--foreground-muted))]">{alert.department}</span>
+            )}
+          </>
+        ) : (
+          <span className="block truncate font-medium text-[hsl(var(--foreground-muted))]">Unassigned device</span>
+        )}
       </button>
       <span className="w-24">
         <Badge variant={alert.alert_type === "flagged_browsing" ? "warning" : "outline"}>
