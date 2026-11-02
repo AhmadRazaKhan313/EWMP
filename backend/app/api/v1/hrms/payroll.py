@@ -102,6 +102,7 @@ from app.services.payroll_formula import (
     validate_formula,
 )
 from app.services.payroll_calendar import compute_payable_days, load_day_inputs
+from app.services.payroll_pay_items import resolve_pay_items
 from app.services.payroll_settlements import apply_run, is_reserved, record_settlement, reserved_amount, undo_run
 from app.services.payroll_tax import TaxBracketData, calculate_progressive_tax, monthly_from_annual
 from app.models.user import User
@@ -2024,6 +2025,26 @@ async def generate_payroll_run(
                 "amount": amount, "is_taxable": comp.is_taxable, "order": comp.display_order,
             })
 
+        # ── Per-employee extra allowances (Compensation tab: Medical, Fuel, …) ──
+        # Treated like structure earnings: prorated by attendance, counted in
+        # gross and (when marked taxable) in taxable income, and visible to the
+        # deduction formulas through prorated_earnings.
+        extra_earnings, extra_deductions = resolve_pay_items(
+            getattr(employee, "compensation_items", None), salary.basic_salary, run.period_start, run.period_end
+        )
+        for item in extra_earnings:
+            amount = (item.amount * attendance_factor).quantize(Decimal("0.01"))
+            if amount <= 0:
+                continue
+            gross += amount
+            prorated_earnings[item.code] = amount
+            if item.is_taxable:
+                taxable_income += amount
+            lines.append({
+                "code": item.code, "name": item.name, "type": ComponentType.EARNING,
+                "amount": amount, "is_taxable": item.is_taxable, "order": item.order,
+            })
+
         # ── Loans, Advances, Bonuses, Arrears, Reimbursements, Commissions ──
         # Placed here (before tax) so taxable bonuses/arrears correctly
         # count toward taxable_income — computing tax first and adding
@@ -2178,6 +2199,15 @@ async def generate_payroll_run(
             lines.append({
                 "code": comp.code, "name": comp.name, "type": comp.component_type,
                 "amount": amount, "is_taxable": comp.is_taxable, "order": comp.display_order,
+            })
+
+        # Per-employee extra deductions (Compensation tab). Charged in full —
+        # a fixed monthly deduction is not shrunk by absences.
+        for item in extra_deductions:
+            deductions += item.amount
+            lines.append({
+                "code": item.code, "name": item.name, "type": ComponentType.DEDUCTION,
+                "amount": item.amount, "is_taxable": False, "order": item.order,
             })
 
         # ── Tax engine — one active PayrollTaxRule per tenant, versioned
@@ -2592,6 +2622,21 @@ async def finalize_payroll_run(
     await db.flush()
 
     await _write_audit_log(db, tenant_id, current_user.id, "RUN_FINALIZED", "PayrollRun", run.id, new_value={"status": "locked"})
+
+    # Everyone in the run can now see their payslip.
+    from app.services.notify import notify, user_ids_for_employees
+    await notify(
+        db, tenant_id, await user_ids_for_employees(db, tenant_id, [p.employee_id for p in run.payslips]),
+        category="payroll", icon="file-text", title="Your payslip is ready",
+        body=f"Your payslip for {run.name} is now available.",
+        action_url="/payroll", metadata={"payroll_run_id": str(run.id)},
+    )
+    # Payments may all have been recorded while the run was still only APPROVED.
+    batch = (
+        await db.execute(select(PaymentBatch).where(PaymentBatch.payroll_run_id == run.id, PaymentBatch.is_deleted == False))  # noqa: E712
+    ).scalar_one_or_none()
+    if batch is not None:
+        await _mark_run_paid_if_complete(db, batch, current_user.id)
     return {"id": str(run.id), "status": run.status.value, "snapshot_id": str(snapshot.id)}
 
 
@@ -3067,7 +3112,9 @@ async def download_payslip_pdf(
         )
     ).scalars().all()
 
-    pdf_bytes = _render_payslip_pdf(payslip, employee, emp_user, run, lines)
+    from app.services.organization_logo import logo_for_pdf
+
+    pdf_bytes = _render_payslip_pdf(payslip, employee, emp_user, run, lines, await logo_for_pdf(tenant_id))
     filename = f"payslip-{employee.employee_code if employee else payslip_id}-{run.pay_date if run else ''}.pdf"
     return StreamingResponse(
         io.BytesIO(pdf_bytes),
@@ -3086,7 +3133,9 @@ async def _can_view_payslip(db: AsyncSession, current_user: User, tenant_id: UUI
     return bool(employee and employee.user_id == current_user.id)
 
 
-def _render_payslip_pdf(payslip: Payslip, employee, emp_user, run, lines: list[PayslipLine]) -> bytes:
+def _render_payslip_pdf(
+    payslip: Payslip, employee, emp_user, run, lines: list[PayslipLine], logo: bytes | None = None
+) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.units import mm
@@ -3099,6 +3148,20 @@ def _render_payslip_pdf(payslip: Payslip, employee, emp_user, run, lines: list[P
     elements = []
 
     name = f"{emp_user.first_name} {emp_user.last_name}" if emp_user else "Employee"
+    if logo:
+        # Organization logo (O-01), scaled to fit a 16 mm-high, 60 mm-wide box.
+        try:
+            from reportlab.lib.utils import ImageReader
+            from reportlab.platypus import Image as PdfImage
+
+            w, h = ImageReader(io.BytesIO(logo)).getSize()
+            scale = min(16 * mm / h, 60 * mm / w)
+            picture = PdfImage(io.BytesIO(logo), width=w * scale, height=h * scale)
+            picture.hAlign = "LEFT"
+            elements.append(picture)
+            elements.append(Spacer(1, 6))
+        except Exception:
+            pass  # a logo problem must never stop a payslip from downloading
     elements.append(Paragraph("Payslip", styles["Title"]))
     elements.append(Spacer(1, 6))
     period = f"{run.period_start} to {run.period_end}" if run else ""
@@ -3561,7 +3624,7 @@ async def _reconcilable_item(
     return batch, item
 
 
-async def _refresh_batch_status(db: AsyncSession, batch: PaymentBatch) -> None:
+async def _refresh_batch_status(db: AsyncSession, batch: PaymentBatch, user_id: UUID) -> None:
     """PREPARED → PROCESSING once results come in → COMPLETED when every
     item is paid, FAILED when nothing is pending and some failed (a failed
     item can still be retried and marked paid later)."""
@@ -3577,6 +3640,24 @@ async def _refresh_batch_status(db: AsyncSession, batch: PaymentBatch) -> None:
     else:
         batch.status = PaymentBatchStatus.FAILED
     await db.flush()
+    await _mark_run_paid_if_complete(db, batch, user_id)
+
+
+async def _mark_run_paid_if_complete(db: AsyncSession, batch: PaymentBatch, user_id: UUID) -> bool:
+    """LOCKED → PAID once every payment of the run's batch is recorded as paid.
+
+    Only a LOCKED run moves: an APPROVED run has not been finalized yet, so it
+    must go through Finalize first (finalize calls this again afterwards).
+    Payslips are already marked PAID one by one in mark-paid."""
+    if batch.status != PaymentBatchStatus.COMPLETED:
+        return False
+    run = (await db.execute(select(PayrollRun).where(PayrollRun.id == batch.payroll_run_id))).scalar_one_or_none()
+    if run is None or run.status != PayrollRunStatus.LOCKED:
+        return False
+    run.status = PayrollRunStatus.PAID
+    await db.flush()
+    await _write_audit_log(db, run.tenant_id, user_id, "RUN_PAID", "PayrollRun", run.id, new_value={"status": "paid"})
+    return True
 
 
 # Recording that money moved is a finalizing act, not a download — these
@@ -3601,9 +3682,17 @@ async def mark_payment_item_paid(
     payslip = (await db.execute(select(Payslip).where(Payslip.id == item.payslip_id))).scalar_one_or_none()
     if payslip is not None:
         payslip.status = PayslipStatus.PAID
-    await _refresh_batch_status(db, batch)
+    await _refresh_batch_status(db, batch, current_user.id)
     await _write_audit_log(db, tenant_id, current_user.id, "PAYMENT_MARKED_PAID", "PaymentBatchItem", item.id,
                            new_value={"reference": body.payment_reference})
+
+    from app.services.notify import notify, user_id_for_employee
+    await notify(
+        db, tenant_id, [await user_id_for_employee(db, tenant_id, item.employee_id)],
+        category="payroll", icon="banknote", title="Salary paid",
+        body="Your salary payment has been sent." + (f" Reference: {body.payment_reference}." if body.payment_reference else ""),
+        action_url="/payroll", metadata={"payment_item_id": str(item.id)},
+    )
     return _serialize_payment_item(item)
 
 
@@ -3624,7 +3713,7 @@ async def mark_payment_item_failed(
         raise ConflictError("This payment is already marked failed")
     item.status = PaymentItemStatus.FAILED
     item.failure_reason = body.failure_reason
-    await _refresh_batch_status(db, batch)
+    await _refresh_batch_status(db, batch, current_user.id)
     await _write_audit_log(db, tenant_id, current_user.id, "PAYMENT_MARKED_FAILED", "PaymentBatchItem", item.id,
                            new_value={"reason": body.failure_reason})
     return _serialize_payment_item(item)
