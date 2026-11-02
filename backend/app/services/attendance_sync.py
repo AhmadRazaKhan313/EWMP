@@ -172,7 +172,7 @@ async def ensure_attendance_checked_in(
     # app a moment ago), do nothing rather than raising — this is a sync
     # call, and two apps racing to report the same check-in is normal,
     # not an error.
-    already_open = await get_open_punch(db, tenant_id, employee.id)
+    already_open = await get_open_punch(db, tenant_id, employee.id, now=now)
     if already_open is not None:
         return (
             await db.execute(
@@ -213,11 +213,11 @@ async def ensure_attendance_checked_out(
     """
     from app.services.attendance_punches import close_punch, get_open_punch
 
-    open_punch = await get_open_punch(db, tenant_id, employee_id)
+    now = checked_out_at or datetime.now(UTC)
+    open_punch = await get_open_punch(db, tenant_id, employee_id, now=now)
     if open_punch is None:
         return None
 
-    now = checked_out_at or datetime.now(UTC)
     _, record = await close_punch(
         db, open_punch, at=now, source=AttendanceSource.DESKTOP_AGENT, break_minutes=break_minutes
     )
@@ -234,9 +234,9 @@ class SweepResult:
 
 
 async def _stop_timer(db: AsyncSession, tenant_id: UUID, employee_id: UUID, at: datetime) -> bool:
-    """End an employee's running timer at `at`, crediting NOTHING — the same
-    "never invent worked time" rule the punch cutoff follows. Any hours are
-    restored only through an approved regularization of the punch."""
+    """End an employee's running timer at `at` (the midnight / shift-end
+    cutoff), CREDITING the time worked up to it, breaks excluded -- the same
+    rule the punch cutoff follows."""
     session = (
         await db.execute(
             select(WorkSession).where(
@@ -259,7 +259,16 @@ async def _stop_timer(db: AsyncSession, tenant_id: UUID, employee_id: UUID, at: 
         br.ended_at = max(br.started_at, end_at)
     session.ended_at = end_at
     session.status = WorkSessionStatus.ENDED
-    session.total_minutes = 0
+    all_breaks = (
+        await db.execute(select(BreakRecord).where(BreakRecord.work_session_id == session.id))
+    ).scalars().all()
+    break_minutes = sum(
+        max(0, int(((min(b.ended_at or end_at, end_at)) - b.started_at).total_seconds() // 60))
+        for b in all_breaks
+    )
+    session.total_minutes = max(
+        0, int((end_at - session.started_at).total_seconds() // 60) - break_minutes
+    )
     return True
 
 
@@ -267,6 +276,7 @@ async def sweep_stale_attendance(
     db: AsyncSession,
     now: datetime | None = None,
     policy: "CutoffPolicy | None" = None,
+    employee_id: UUID | None = None,
 ) -> SweepResult:
     """The single auto-close policy for forgotten check-outs (audit M-7).
 
@@ -293,41 +303,48 @@ async def sweep_stale_attendance(
     """
     from app.services.attendance_punches import (
         CutoffPolicy,
+        compute_cutoff_at,
         get_open_punch,
         lock_employee_attendance,
         run_auto_cutoff,
     )
+    from app.core.timezones import org_zone
 
     now = now or datetime.now(UTC)
     policy = policy or CutoffPolicy()
     result = SweepResult()
 
-    cut = await run_auto_cutoff(db, now=now, policy=policy)
+    cut = await run_auto_cutoff(db, now=now, policy=policy, employee_id=employee_id)
     result.punches_closed = cut.closed
     for tenant_id, employee_id, cutoff_at in cut.closed_for:
         if await _stop_timer(db, tenant_id, employee_id, cutoff_at):
             result.timers_stopped += 1
 
-    too_old = now - timedelta(hours=policy.hard_cap_hours)
+    too_old = now  # orphan timers are judged by the midnight rule below, not a 14h cap
     orphans = (
         await db.execute(
             select(WorkSession).where(
                 WorkSession.status != WorkSessionStatus.ENDED,
                 WorkSession.is_deleted == False,  # noqa: E712
                 WorkSession.started_at < too_old,
+                *([WorkSession.employee_id == employee_id] if employee_id is not None else []),
             )
         )
     ).scalars().all()
     for session in orphans:
+        cap_at = compute_cutoff_at(session.started_at, None, policy, await org_zone(db, session.tenant_id))
+        if now < cap_at:
+            continue
         await lock_employee_attendance(db, session.employee_id)
         await db.refresh(session)
         if session.status == WorkSessionStatus.ENDED:
             continue
-        if await get_open_punch(db, session.tenant_id, session.employee_id) is not None:
+        if await get_open_punch(db, session.tenant_id, session.employee_id, now=now) is not None:
             continue  # its punch has not reached ITS cutoff yet; step 1 handles it later
-        cap_at = session.started_at + timedelta(hours=policy.hard_cap_hours)
         if await _stop_timer(db, session.tenant_id, session.employee_id, cap_at):
             result.orphan_timers_stopped += 1
 
     await db.flush()
     return result
+
+# midnight-cutoff-applied

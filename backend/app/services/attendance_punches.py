@@ -77,8 +77,8 @@ class CutoffPolicy:
         that ends the day the employee checked in.
       * EVENING shift (starts at/after 12:00) -> closed at 09:00 the next morning.
 
-    Either way the closed punch is credited 0 minutes. Hours come back only
-    through an approved regularization.
+    CHANGED (midnight rule): the closed punch is now CREDITED up to the cutoff
+    (minus breaks). See compute_cutoff_at for the cutoff itself.
     """
 
     grace_hours_after_shift_end: int = DEFAULT_GRACE_HOURS_AFTER_SHIFT_END  # no longer used by compute_cutoff_at
@@ -105,25 +105,22 @@ def compute_cutoff_at(
     """
     The moment an open punch becomes stale (forgotten check-out).
 
-    Morning shift -> 00:00 the night after check-in. Evening shift -> 09:00 the
-    next morning. All on the organisation's clock (`zone`).
-
-    Overnight shifts (e.g. 22:00-06:00) are evening shifts. Someone who punches
-    in after midnight, in the second half of such a shift, is closed at the
-    first 09:00 after that punch, i.e. the same morning, not a day later.
+    Day / no-shift employees -> 00:00 (the midnight that ends the day they
+    checked in). Overnight shifts (e.g. 22:00-06:00) -> that shift's end.
+    All on the organisation's clock (`zone`).
     """
-    local_in = punch_in.astimezone(zone)
-    day = local_in.date()
-
-    if is_morning_shift(punch_in, shift, policy, zone):
-        return datetime.combine(day + timedelta(days=1), policy.morning_cutoff_time, tzinfo=zone)
-
+    # MIDNIGHT RULE: everyone stops at 12 AM (local) of the day they checked in,
+    # except employees on an OVERNIGHT shift, who run to their shift end.
     if shift is not None and shift.is_overnight:
-        candidate = datetime.combine(day, policy.evening_cutoff_time, tzinfo=zone)
-        if candidate <= local_in:
-            candidate += timedelta(days=1)
-        return candidate
-    return datetime.combine(day + timedelta(days=1), policy.evening_cutoff_time, tzinfo=zone)
+        end_at = _resolve_shift_end(punch_in, shift, zone)
+        if end_at <= punch_in:  # early arrival before the shift's own start
+            end_at += timedelta(days=1)
+        return end_at
+
+    local_in = punch_in.astimezone(zone)
+    return datetime.combine(
+        local_in.date() + timedelta(days=1), policy.morning_cutoff_time, tzinfo=zone
+    )
 
 
 def _resolve_shift_end(punch_in: datetime, shift: Shift, zone: ZoneInfo = UTC_ZONE) -> datetime:
@@ -163,6 +160,34 @@ def _resolve_shift_end(punch_in: datetime, shift: Shift, zone: ZoneInfo = UTC_ZO
 
 
 async def get_open_punch(
+    db: AsyncSession, tenant_id: uuid.UUID, employee_id: uuid.UUID, now: datetime | None = None
+) -> AttendancePunch | None:
+    """The employee's running punch -- after enforcing the midnight cutoff.
+
+    Every check-in / check-out / status / desktop-sync call goes through here,
+    so a punch that outlived its cutoff is closed (hours credited up to the
+    cutoff, timer stopped at the same instant) right now, with or without the
+    scheduler running. A stale punch is therefore never returned."""
+    punch = await _find_open_punch(db, tenant_id, employee_id)
+    if punch is None:
+        return None
+    now = now or datetime.now(UTC)
+    shift = None
+    if punch.shift_id is not None:
+        shift = (await db.execute(select(Shift).where(Shift.id == punch.shift_id))).scalar_one_or_none()
+    cutoff = compute_cutoff_at(punch.punch_in, shift, CutoffPolicy(), await org_zone(db, tenant_id))
+    if now < cutoff:
+        return punch
+
+    from app.services.attendance_sync import _stop_timer  # lazy: attendance_sync imports this module
+
+    cut = await run_auto_cutoff(db, now=now, tenant_id=tenant_id, employee_id=employee_id)
+    for t_id, e_id, cutoff_at in cut.closed_for:
+        await _stop_timer(db, t_id, e_id, cutoff_at)
+    return await _find_open_punch(db, tenant_id, employee_id)
+
+
+async def _find_open_punch(
     db: AsyncSession, tenant_id: uuid.UUID, employee_id: uuid.UUID
 ) -> AttendancePunch | None:
     """
@@ -271,7 +296,7 @@ async def open_punch(
     # gap between their check and this one; raising here (as it used to)
     # turned that race into an HTTP 500 (audit H-2). The web endpoint still
     # answers a plain, non-racing double check-in with its own 400.
-    existing = await get_open_punch(db, tenant_id, employee_id)
+    existing = await get_open_punch(db, tenant_id, employee_id, now=at)
     if existing is not None:
         return existing, await _record_of(db, existing)
 
@@ -404,7 +429,11 @@ async def recalculate_from_punches(db: AsyncSession, record: AttendanceRecord) -
     # reporting it as PRESENT would present an undercount as a fact.
     # `is_regularized` is checked so an approved correction is not
     # immediately re-flagged by the next recalculation.
-    if record.is_forced_checkout and not record.is_regularized:
+    # A punch closed by the midnight cutoff HAS a punch_out and credited hours,
+    # so it is a normal day. Only a legacy forced punch with no punch_out (hours
+    # unknown) is still MISSED_PUNCH.
+    unresolved_forced = any(p.is_forced_checkout and p.punch_out is None for p in punches)
+    if unresolved_forced and not record.is_regularized:
         record.status = AttendanceStatus.MISSED_PUNCH
     elif record.status in (AttendanceStatus.PRESENT, AttendanceStatus.LATE, AttendanceStatus.MISSED_PUNCH):
         # Leaving MISSED_PUNCH — either this punch was never force-closed,
@@ -468,11 +497,38 @@ class CutoffResult:
             self.closed_for = []
 
 
+async def _break_minutes_between(
+    db: AsyncSession, employee_id: uuid.UUID, start: datetime, end: datetime
+) -> int:
+    """Break time (from the desktop timer) that falls inside [start, end]."""
+    from sqlalchemy import or_
+
+    from app.models.work_session import BreakRecord, WorkSession
+
+    rows = (
+        await db.execute(
+            select(BreakRecord)
+            .join(WorkSession, WorkSession.id == BreakRecord.work_session_id)
+            .where(
+                WorkSession.employee_id == employee_id,
+                BreakRecord.started_at < end,
+                or_(BreakRecord.ended_at.is_(None), BreakRecord.ended_at > start),
+            )
+        )
+    ).scalars().all()
+    total = 0
+    for b in rows:
+        s, e = max(b.started_at, start), min(b.ended_at or end, end)
+        total += max(0, int((e - s).total_seconds() // 60))
+    return total
+
+
 async def run_auto_cutoff(
     db: AsyncSession,
     now: datetime | None = None,
     tenant_id: uuid.UUID | None = None,
     policy: CutoffPolicy = CutoffPolicy(),
+    employee_id: uuid.UUID | None = None,
 ) -> CutoffResult:
     """
     Force-close every punch that has run past its cutoff.
@@ -506,6 +562,8 @@ async def run_auto_cutoff(
     ]
     if tenant_id is not None:
         filters.append(AttendancePunch.tenant_id == tenant_id)
+    if employee_id is not None:
+        filters.append(AttendancePunch.employee_id == employee_id)
 
     open_punches = (
         await db.execute(select(AttendancePunch).where(*filters).order_by(AttendancePunch.punch_in))
@@ -543,10 +601,16 @@ async def run_auto_cutoff(
         if punch.punch_out is not None or punch.is_forced_checkout:
             continue
 
-        # punch_out stays NULL on purpose — see the module docstring.
+        # MIDNIGHT RULE: the punch is closed AT the cutoff and the hours up to
+        # it are credited (breaks excluded). is_forced_checkout stays True so
+        # reports can show "closed automatically".
+        breaks = await _break_minutes_between(db, punch.employee_id, punch.punch_in, cutoff_at)
+        punch.punch_out = cutoff_at
         punch.is_forced_checkout = True
         punch.auto_closed_at = now
-        punch.duration_minutes = 0
+        punch.duration_minutes = max(
+            0, int((cutoff_at - punch.punch_in).total_seconds() // 60) - breaks
+        )
         result.closed += 1
         result.closed_punch_ids.append(punch.id)
         result.closed_for.append((punch.tenant_id, punch.employee_id, cutoff_at))
@@ -571,9 +635,11 @@ async def run_auto_cutoff(
             await notify(
                 db, tenant, [await user_id_for_employee(db, tenant, employee)],
                 category="attendance", icon="clock", title="You were checked out automatically",
-                body=(f"You did not check out on {cutoff_at.date()}, so the system closed it. "
-                      "If your hours are wrong, ask for an attendance correction."),
-                action_url="/attendance", metadata={"date": str(cutoff_at.date())},
+                body=(f"You did not check out, so the system stopped your timer at "
+                      f"{cutoff_at.strftime('%I:%M %p')} and counted your hours up to then. "
+                      "If that is wrong, ask for an attendance correction."),
+                action_url="/attendance",
+                metadata={"date": str((cutoff_at - timedelta(minutes=1)).date())},
             )
     except Exception:  # noqa: BLE001
         import logging
@@ -623,3 +689,5 @@ async def apply_regularization(
 
     await recalculate_from_punches(db, record)
     return record
+
+# midnight-cutoff-applied

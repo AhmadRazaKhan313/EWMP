@@ -35,6 +35,11 @@ def _no_attendance_lock(monkeypatch):
 
     monkeypatch.setattr("app.api.v1.hrms.work_sessions.lock_employee_attendance", _noop)
 
+    async def _no_sweep(db, employee_id):
+        return False
+
+    monkeypatch.setattr("app.api.v1.hrms.work_sessions._enforce_cutoff", _no_sweep)
+
 
 @pytest.fixture(autouse=True)
 def _org_timezone_is_utc(monkeypatch):

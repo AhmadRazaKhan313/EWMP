@@ -23,10 +23,29 @@ from app.models.work_session import BreakRecord, BreakType, WorkSession, WorkSes
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id
 from app.repositories.employee import EmployeeRepository
-from app.services.attendance_sync import ensure_attendance_checked_in, ensure_attendance_checked_out
+from app.services.attendance_sync import (
+    ensure_attendance_checked_in,
+    ensure_attendance_checked_out,
+    sweep_stale_attendance,
+)
 from app.services.attendance_punches import lock_employee_attendance
 
 router = APIRouter(prefix="/work-sessions", tags=["Work Sessions"])
+
+
+async def _enforce_cutoff(db: AsyncSession, employee_id: uuid.UUID) -> bool:
+    """Apply the midnight cutoff to this employee right now. Never lets an
+    enforcement problem break the timer endpoints: inside a SAVEPOINT, errors are
+    logged and the request carries on. True when the sweep ran."""
+    try:
+        async with db.begin_nested():
+            await sweep_stale_attendance(db, employee_id=employee_id)
+        return True
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger("ewmp.attendance").exception("midnight cutoff enforcement failed")
+        return False
 
 
 async def _resolve_own_employee_id(db: AsyncSession, tenant_id: uuid.UUID, current_user: User) -> uuid.UUID:
@@ -167,6 +186,9 @@ async def get_active_session(
     db: AsyncSession = Depends(get_db),
 ) -> dict | None:
     employee_id = await _resolve_own_employee_id(db, tenant_id, current_user)
+    # Midnight rule, enforced here too: a timer past its cutoff is stopped (hours
+    # credited up to it) on the very request that would have shown it running.
+    await _enforce_cutoff(db, employee_id)
     session = (
         await db.execute(
             select(WorkSession).where(
@@ -196,6 +218,7 @@ async def start_session(
     timer into two concurrent sessions."""
     employee_id = await _resolve_own_employee_id(db, tenant_id, current_user)
     await lock_employee_attendance(db, employee_id)  # one check-in/out at a time per employee
+    await _enforce_cutoff(db, employee_id)  # yesterday's stale timer must not be "resumed"
 
     lookup = select(WorkSession).where(
         WorkSession.tenant_id == tenant_id,
@@ -249,6 +272,15 @@ async def end_session(
     employee_id = await _resolve_own_employee_id(db, tenant_id, current_user)
     await lock_employee_attendance(db, employee_id)  # one check-in/out at a time per employee
     session = await _get_own_session_or_404(db, tenant_id, session_id, employee_id)
+
+    if session.status != WorkSessionStatus.ENDED:
+        # Stop pressed after the midnight cutoff: the sweep ends the timer AT the
+        # cutoff (hours credited up to it). Answer with that, not with "now".
+        if await _enforce_cutoff(db, employee_id):
+            await db.refresh(session)
+        if session.status == WorkSessionStatus.ENDED:
+            completed_minutes, completed_seconds, open_break = await _break_totals(db, session.id)
+            return _serialize(session, completed_minutes, open_break, completed_seconds)
 
     if session.status == WorkSessionStatus.ENDED:
         raise HTTPException(status_code=409, detail="This session has already ended")
@@ -445,3 +477,5 @@ async def list_break_types(
             for t in types
         ]
     }
+
+# midnight-cutoff-applied
