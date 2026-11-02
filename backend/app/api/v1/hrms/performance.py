@@ -9,6 +9,7 @@ from app.core.exceptions import NotFoundError
 from app.models.performance import Goal, PerformanceReview, GoalStatus, ReviewStatus
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
+from app.services.tenant_guard import require_employee
 from datetime import datetime, UTC
 
 router = APIRouter(prefix="/performance", tags=["Performance"])
@@ -26,7 +27,7 @@ class GoalCreate(BaseModel):
 
 class GoalUpdate(BaseModel):
     title: str | None = None
-    status: str | None = None
+    status: GoalStatus | None = None
     progress_percent: int | None = None
     description: str | None = None
 
@@ -45,7 +46,7 @@ class ReviewCreate(BaseModel):
 @router.get("/goals")
 async def list_goals(
     employee_id: uuid.UUID | None = Query(None),
-    goal_status: str | None = Query(None, alias="status"),
+    goal_status: GoalStatus | None = Query(None, alias="status"),
     page: int = Query(1, ge=1), page_size: int = Query(25, ge=1, le=200),
     current_user: User = Depends(require_permission("performance.view")),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
@@ -82,6 +83,7 @@ async def create_goal(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     from datetime import date as ddate
+    await require_employee(db, tenant_id, body.employee_id)
     goal = Goal(
         tenant_id=tenant_id, employee_id=body.employee_id, title=body.title,
         description=body.description or None, category=body.category or None,
@@ -102,7 +104,7 @@ async def update_goal(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.tenant_id == tenant_id))
+    result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.tenant_id == tenant_id, Goal.is_deleted == False))  # noqa: E712
     goal = result.scalar_one_or_none()
     if not goal:
         raise NotFoundError("Goal not found")
@@ -120,7 +122,7 @@ async def delete_goal(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.tenant_id == tenant_id))
+    result = await db.execute(select(Goal).where(Goal.id == goal_id, Goal.tenant_id == tenant_id, Goal.is_deleted == False))  # noqa: E712
     goal = result.scalar_one_or_none()
     if not goal:
         raise NotFoundError("Goal not found")
@@ -165,6 +167,8 @@ async def create_review(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    await require_employee(db, tenant_id, body.employee_id)
+    await require_employee(db, tenant_id, body.reviewer_id, "Reviewer")
     review = PerformanceReview(
         tenant_id=tenant_id, employee_id=body.employee_id, reviewer_id=body.reviewer_id,
         review_period=body.review_period, review_year=body.review_year,

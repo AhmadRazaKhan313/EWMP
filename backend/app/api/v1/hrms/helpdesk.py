@@ -11,6 +11,7 @@ from app.models.helpdesk import SupportTicket, TicketStatus, TicketPriority
 from app.models.user import User
 from app.permissions.dependencies import get_current_user, get_tenant_id, require_permission
 from app.repositories.employee import EmployeeRepository
+from app.services.tenant_guard import require_device, require_employee
 from datetime import datetime, UTC
 
 router = APIRouter(prefix="/helpdesk", tags=["Helpdesk"])
@@ -20,14 +21,14 @@ class TicketCreate(BaseModel):
     title: str
     description: str = ""
     category: str = "General"
-    priority: str = "medium"
+    priority: TicketPriority = TicketPriority.MEDIUM
     device_id: uuid.UUID | None = None
 
 
 class TicketUpdate(BaseModel):
-    status: str | None = None
+    status: TicketStatus | None = None
     assignee_id: uuid.UUID | None = None
-    priority: str | None = None
+    priority: TicketPriority | None = None
     resolution_notes: str | None = None
 
 TICKET_PREFIX = "TKT-"
@@ -62,8 +63,8 @@ async def _next_ticket_number(db, tenant_id) -> str:
 
 @router.get("/tickets")
 async def list_tickets(
-    ticket_status: str | None = Query(None, alias="status"),
-    priority: str | None = Query(None),
+    ticket_status: TicketStatus | None = Query(None, alias="status"),
+    priority: TicketPriority | None = Query(None),
     assignee_id: uuid.UUID | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
@@ -107,6 +108,8 @@ async def create_ticket(
     # without one, e.g. a platform admin). Tickets used to be saved with no
     # requester at all, so nobody could tell whose problem it was.
     requester = await EmployeeRepository(db, tenant_id).get_by_user_id(current_user.id)
+    if body.device_id:
+        await require_device(db, tenant_id, body.device_id)
 
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
@@ -140,15 +143,16 @@ async def update_ticket(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id, SupportTicket.tenant_id == tenant_id))
+    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id, SupportTicket.tenant_id == tenant_id, SupportTicket.is_deleted == False))  # noqa: E712
     ticket = result.scalar_one_or_none()
     if not ticket:
         raise NotFoundError("Ticket not found")
     if body.status:
         ticket.status = body.status
-        if body.status == "resolved":
+        if body.status == TicketStatus.RESOLVED:
             ticket.resolved_at = datetime.now(UTC)
     if body.assignee_id:
+        await require_employee(db, tenant_id, body.assignee_id, "Assignee")
         ticket.assignee_id = body.assignee_id
     if body.priority:
         ticket.priority = body.priority
@@ -164,7 +168,7 @@ async def delete_ticket(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id, SupportTicket.tenant_id == tenant_id))
+    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id, SupportTicket.tenant_id == tenant_id, SupportTicket.is_deleted == False))  # noqa: E712
     ticket = result.scalar_one_or_none()
     if not ticket:
         raise NotFoundError("Ticket not found")

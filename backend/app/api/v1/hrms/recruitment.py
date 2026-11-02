@@ -30,7 +30,7 @@ class JobCreate(BaseModel):
 
 class JobUpdate(BaseModel):
     title: str | None = None
-    status: str | None = None
+    status: JobStatus | None = None
     description: str | None = None
     openings: int | None = None
 
@@ -48,15 +48,43 @@ class ApplicantCreate(BaseModel):
 
 
 class ApplicantStageUpdate(BaseModel):
-    status: str
+    status: ApplicantStatus
     stage: str = ""
     notes: str = ""
+
+
+async def _require_job(db: AsyncSession, tenant_id: uuid.UUID, job_id: uuid.UUID) -> JobPosting:
+    """A job posting that belongs to THIS organization (and is not deleted)."""
+    job = (
+        await db.execute(
+            select(JobPosting).where(
+                JobPosting.id == job_id, JobPosting.tenant_id == tenant_id, JobPosting.is_deleted == False  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+    if job is None:
+        raise NotFoundError("Job posting not found")
+    return job
+
+
+async def _require_department(db: AsyncSession, tenant_id: uuid.UUID, department_id: uuid.UUID) -> None:
+    from app.models.organization_structure import Department
+
+    found = (
+        await db.execute(
+            select(Department.id).where(
+                Department.id == department_id, Department.tenant_id == tenant_id, Department.is_deleted == False  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+    if found is None:
+        raise NotFoundError("Department not found")
 
 
 # ── Job Postings ──────────────────────────────────────────────────────────────
 @router.get("/jobs")
 async def list_jobs(
-    job_status: str | None = Query(None, alias="status"),
+    job_status: JobStatus | None = Query(None, alias="status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
     current_user: User = Depends(require_permission("recruitment.view")),
@@ -92,6 +120,8 @@ async def create_job(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     from datetime import date as ddate
+    if body.department_id:
+        await _require_department(db, tenant_id, body.department_id)
     job = JobPosting(
         tenant_id=tenant_id, title=body.title, employment_type=body.employment_type,
         description=body.description or None, requirements=body.requirements or None,
@@ -113,10 +143,7 @@ async def update_job(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    result = await db.execute(select(JobPosting).where(JobPosting.id == job_id, JobPosting.tenant_id == tenant_id))
-    job = result.scalar_one_or_none()
-    if not job:
-        raise NotFoundError("Job posting not found")
+    job = await _require_job(db, tenant_id, job_id)
     if body.title: job.title = body.title
     if body.status: job.status = body.status
     if body.description: job.description = body.description
@@ -142,7 +169,7 @@ async def delete_job(
 @router.get("/applicants")
 async def list_applicants(
     job_id: uuid.UUID | None = Query(None),
-    applicant_status: str | None = Query(None, alias="status"),
+    applicant_status: ApplicantStatus | None = Query(None, alias="status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
     current_user: User = Depends(require_permission("recruitment.view")),
@@ -180,6 +207,7 @@ async def add_applicant(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    await _require_job(db, tenant_id, body.job_posting_id)
     applicant = Applicant(
         tenant_id=tenant_id, job_posting_id=body.job_posting_id,
         first_name=body.first_name, last_name=body.last_name, email=body.email,
@@ -200,7 +228,7 @@ async def update_applicant_stage(
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    result = await db.execute(select(Applicant).where(Applicant.id == applicant_id, Applicant.tenant_id == tenant_id))
+    result = await db.execute(select(Applicant).where(Applicant.id == applicant_id, Applicant.tenant_id == tenant_id, Applicant.is_deleted == False))  # noqa: E712
     applicant = result.scalar_one_or_none()
     if not applicant:
         raise NotFoundError("Applicant not found")
@@ -210,4 +238,4 @@ async def update_applicant_stage(
     if body.notes:
         applicant.notes = body.notes
     await db.flush()
-    return {"id": str(applicant.id), "status": body.status, "updated": True}
+    return {"id": str(applicant.id), "status": body.status.value, "updated": True}

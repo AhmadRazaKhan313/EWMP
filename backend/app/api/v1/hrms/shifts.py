@@ -22,6 +22,7 @@ class ShiftCreate(BaseModel):
     is_overnight: bool = False
     late_grace_minutes: int = 10
     break_duration_minutes: int = 60
+    weekly_hours: float = Field(40, gt=0, le=168)  # weekly target shown on the dashboard
     color: str = "#3b82f6"
 
 
@@ -30,6 +31,7 @@ class ShiftUpdate(BaseModel):
     color: str | None = None
     is_active: bool | None = None
     late_grace_minutes: int | None = None
+    weekly_hours: float | None = Field(None, gt=0, le=168)
 
 
 class AssignShiftRequest(BaseModel):
@@ -76,7 +78,7 @@ async def list_shifts(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_shift(
     body: ShiftCreate,
-    current_user: User = Depends(require_permission("attendance.view")),
+    current_user: User = Depends(require_permission("shifts.manage")),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -88,7 +90,8 @@ async def create_shift(
     shift = Shift(tenant_id=tenant_id, name=body.name, code=body.code, start_time=st, end_time=et,
                   work_days=body.work_days or ["mon","tue","wed","thu","fri"],
                   is_overnight=body.is_overnight, late_grace_minutes=body.late_grace_minutes,
-                  break_duration_minutes=body.break_duration_minutes, color=body.color, is_active=True)
+                  break_duration_minutes=body.break_duration_minutes, weekly_hours=body.weekly_hours,
+                  color=body.color, is_active=True)
     db.add(shift)
     await db.flush()
     return {"id": str(shift.id), "name": shift.name, "created": True}
@@ -97,7 +100,7 @@ async def create_shift(
 async def update_shift(
     shift_id: uuid.UUID,
     body: ShiftUpdate,
-    current_user: User = Depends(require_permission("attendance.view")),
+    current_user: User = Depends(require_permission("shifts.manage")),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -267,7 +270,7 @@ async def set_shift_roster(
 @router.delete("/{shift_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_shift(
     shift_id: uuid.UUID,
-    current_user: User = Depends(require_permission("attendance.view")),
+    current_user: User = Depends(require_permission("shifts.manage")),
     tenant_id: uuid.UUID = Depends(get_tenant_id),
     db: AsyncSession = Depends(get_db),
 ) -> None:
