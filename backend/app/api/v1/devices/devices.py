@@ -436,6 +436,40 @@ async def heartbeat(
     return reply
 
 
+async def _employee_cards(db: AsyncSession, tenant_id: UUID, employee_ids) -> dict:
+    """employee id -> the details an admin wants to see for whoever holds a device
+    (name, code, department, designation, email, phone, photo)."""
+    ids = {i for i in employee_ids if i}
+    if not ids:
+        return {}
+    from app.models.employee import Employee
+    from app.models.organization_structure import Department, Designation
+
+    rows = (
+        await db.execute(
+            select(Employee, Department.name, Designation.name)
+            .outerjoin(Department, Department.id == Employee.department_id)
+            .outerjoin(Designation, Designation.id == Employee.designation_id)
+            .where(Employee.id.in_(ids), Employee.tenant_id == tenant_id)
+        )
+    ).all()
+    cards: dict = {}
+    for emp, department, designation in rows:
+        user = emp.user
+        full_name = f"{user.first_name} {user.last_name}".strip() if user else None
+        cards[emp.id] = {
+            "id": str(emp.id),
+            "full_name": full_name or emp.employee_code,
+            "employee_code": emp.employee_code,
+            "email": user.email if user else None,
+            "phone": (emp.work_phone or (user.phone if user else None)),
+            "avatar_url": user.avatar_url if user else None,
+            "department": department,
+            "designation": designation,
+        }
+    return cards
+
+
 @router.get("", summary="List all enrolled devices")
 async def list_devices(
     status: DeviceStatus | None = Query(None),
@@ -489,6 +523,8 @@ async def list_devices(
         metric = latest_metrics.get(device_id)
         return getattr(metric, field) if metric is not None else None
 
+    holders = await _employee_cards(db, tenant_id, [d.assigned_employee_id for d in items])
+
     return {
         "items": [
             {
@@ -505,6 +541,7 @@ async def list_devices(
                 "ram_usage_percent": _metric_field(d.id, "ram_usage_percent"),
                 "disk_usage_percent": _metric_field(d.id, "disk_usage_percent"),
                 "assigned_employee_id": str(d.assigned_employee_id) if d.assigned_employee_id else None,
+                "assigned_employee": holders.get(d.assigned_employee_id),
                 "public_ip": d.public_ip,
                 "local_ip": d.local_ip,
             }
@@ -586,12 +623,22 @@ async def list_all_alerts(
             await db.execute(select(Device).where(Device.id.in_(device_ids)))
         ).scalars().all()
         devices_by_id = {d.id: d for d in device_rows}
+    holders = await _employee_cards(
+        db, tenant_id, [d.assigned_employee_id for d in devices_by_id.values()]
+    )
+
+    def _holder(device_id) -> dict:
+        dev = devices_by_id.get(device_id)
+        return (holders.get(dev.assigned_employee_id) if dev else None) or {}
 
     return {
         "items": [
             {
                 "id": str(a.id),
                 "device_id": str(a.device_id),
+                "employee_name": _holder(a.device_id).get("full_name"),
+                "employee_code": _holder(a.device_id).get("employee_code"),
+                "department": _holder(a.device_id).get("department"),
                 "device_name": (devices_by_id.get(a.device_id).device_name if devices_by_id.get(a.device_id) else None)
                     or (devices_by_id.get(a.device_id).hostname if devices_by_id.get(a.device_id) else "Unknown device"),
                 "alert_type": a.alert_type.value,
@@ -672,27 +719,9 @@ async def get_device(
         )
     ).scalar_one_or_none()
 
-    assigned_employee = None
-    if device.assigned_employee_id:
-        from sqlalchemy.orm import selectinload
-        from app.models.employee import Employee
-        emp = (
-            await db.execute(
-                select(Employee)
-                .options(selectinload(Employee.user))
-                .where(Employee.id == device.assigned_employee_id)
-            )
-        ).scalar_one_or_none()
-        if emp:
-            assigned_employee = {
-                "id": str(emp.id),
-                "full_name": (
-                    f"{emp.user.first_name} {emp.user.last_name}".strip()
-                    if emp.user
-                    else None
-                ),
-                "employee_code": emp.employee_code,
-            }
+    assigned_employee = (
+        await _employee_cards(db, tenant_id, [device.assigned_employee_id])
+    ).get(device.assigned_employee_id)
 
     return {
         "id": str(device.id),
@@ -742,6 +771,84 @@ async def get_device(
             if latest_metric
             else None
         ),
+    }
+
+
+@router.get("/{device_id}/attendance", summary="Attendance of the employee who holds this device")
+async def get_device_holder_attendance(
+    device_id: UUID,
+    days: int = Query(14, ge=1, le=60),
+    current_user: User = Depends(require_permission("attendance.view")),
+    tenant_id: UUID = Depends(get_tenant_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Today + the last `days` days for whoever has this computer, so the device page can
+    answer "is this person actually working?" instead of showing CPU graphs."""
+    from datetime import timedelta
+
+    from app.core.timezones import local_today, org_zone
+    from app.models.attendance import AttendanceRecord, AttendanceStatus
+
+    device = (
+        await db.execute(select(Device).where(Device.id == device_id, Device.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if not device:
+        raise NotFoundError("Device not found")
+    if not device.assigned_employee_id:
+        return {"assigned": False, "today": None, "days": [], "summary": None}
+
+    today = local_today(await org_zone(db, tenant_id))
+    since = today - timedelta(days=days - 1)
+    rows = (
+        await db.execute(
+            select(AttendanceRecord)
+            .where(
+                AttendanceRecord.tenant_id == tenant_id,
+                AttendanceRecord.employee_id == device.assigned_employee_id,
+                AttendanceRecord.is_deleted == False,  # noqa: E712
+                AttendanceRecord.date >= since,
+                AttendanceRecord.date <= today,
+            )
+            .order_by(AttendanceRecord.date.desc())
+        )
+    ).scalars().all()
+
+    now = datetime.now(timezone.utc)
+
+    def _minutes(r) -> int | None:
+        if r.total_minutes:
+            return r.total_minutes
+        if r.check_in and not r.check_out:  # still working -> live figure
+            return max(0, int((now - r.check_in).total_seconds() // 60))
+        return r.total_minutes
+
+    def _row(r) -> dict:
+        return {
+            "date": r.date.isoformat(),
+            "status": r.status.value,
+            "check_in": r.check_in.isoformat() if r.check_in else None,
+            "check_out": r.check_out.isoformat() if r.check_out else None,
+            "total_minutes": _minutes(r),
+            "late_minutes": r.late_minutes,
+            "is_working": bool(r.check_in and not r.check_out),
+        }
+
+    items = [_row(r) for r in rows]
+    worked = [i["total_minutes"] for i in items if i["total_minutes"]]
+    here = {AttendanceStatus.PRESENT, AttendanceStatus.LATE, AttendanceStatus.HALF_DAY,
+            AttendanceStatus.WORK_FROM_HOME, AttendanceStatus.MISSED_PUNCH}
+    return {
+        "assigned": True,
+        "today": next((i for i in items if i["date"] == today.isoformat()), None),
+        "days": items,
+        "summary": {
+            "days": days,
+            "present": sum(1 for r in rows if r.status in here),
+            "late": sum(1 for r in rows if r.status == AttendanceStatus.LATE),
+            "absent": sum(1 for r in rows if r.status == AttendanceStatus.ABSENT),
+            "on_leave": sum(1 for r in rows if r.status == AttendanceStatus.ON_LEAVE),
+            "avg_minutes": int(sum(worked) / len(worked)) if worked else 0,
+        },
     }
 
 
@@ -1360,12 +1467,22 @@ async def list_recent_alerts(
             await db.execute(select(Device).where(Device.id.in_(device_ids)))
         ).scalars().all()
         devices_by_id = {d.id: d for d in device_rows}
+    holders = await _employee_cards(
+        db, tenant_id, [d.assigned_employee_id for d in devices_by_id.values()]
+    )
+
+    def _holder(device_id) -> dict:
+        dev = devices_by_id.get(device_id)
+        return (holders.get(dev.assigned_employee_id) if dev else None) or {}
 
     return {
         "items": [
             {
                 "id": str(a.id),
                 "device_id": str(a.device_id),
+                "employee_name": _holder(a.device_id).get("full_name"),
+                "employee_code": _holder(a.device_id).get("employee_code"),
+                "department": _holder(a.device_id).get("department"),
                 "device_name": (devices_by_id.get(a.device_id).device_name if devices_by_id.get(a.device_id) else None)
                     or (devices_by_id.get(a.device_id).hostname if devices_by_id.get(a.device_id) else "Unknown device"),
                 "alert_type": a.alert_type.value,
