@@ -19,7 +19,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { addDays, format, parseISO } from "date-fns";
+import { format, parseISO } from "date-fns";
 import {
   Area, AreaChart, CartesianGrid, Cell, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -31,6 +31,7 @@ import {
 import apiClient from "@/services/api-client";
 import { useAuthStore } from "@/store/auth.store";
 import { cn } from "@/utils/cn";
+import { AbsentTodayCard } from "@/components/dashboard/AbsentTodayCard";
 
 // ── Chart colours ────────────────────────────────────────────────────────────
 // Recharts writes colours into SVG attributes, where CSS variables are not
@@ -210,6 +211,39 @@ function useDashboardStats(enabled: boolean) {
   });
 }
 
+interface WeekDay {
+  date: string;
+  weekday: string;
+  hours: number;
+  people: number;
+  is_working_day: boolean;
+  extra_day: boolean;
+}
+interface WeeklyHours {
+  week_start: string;
+  week_end: string;
+  days: WeekDay[];
+  total_hours: number;
+  target_hours: number;
+  working_days: number;
+}
+
+/** Hours per day (Mon-Sun) for the current week. `team` = average per person
+ *  who worked that day; otherwise the signed-in user's own hours. */
+function useWeeklyHours(scope: "me" | "team") {
+  return useQuery({
+    queryKey: ["dashboard-weekly-hours", scope],
+    queryFn: async () =>
+      (await apiClient.get<WeeklyHours>("/dashboard/weekly-hours", { params: { scope } })).data,
+    staleTime: 60_000,
+  });
+}
+
+const fmtHours = (h: number) => {
+  const m = Math.round(h * 60);
+  return m % 60 === 0 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 60)}h ${m % 60}m`;
+};
+
 function useAttendanceRange(from: string, to: string, enabled: boolean) {
   return useQuery({
     queryKey: ["dashboard-attendance", from, to],
@@ -281,37 +315,34 @@ function useWorkTypeCounts(enabled: boolean) {
 
 // ── Widgets ──────────────────────────────────────────────────────────────────
 
-function AvgWorkHours({ from, to, className }: { from: Date; to: Date; className?: string }) {
-  const { data, isLoading } = useAttendanceRange(isoDay(from), isoDay(to), true);
+function AvgWorkHours({ team, className }: { team: boolean; className?: string }) {
+  const { data, isLoading } = useWeeklyHours(team ? "team" : "me");
 
-  const series = useMemo(() => {
-    const byDay = new Map<string, number[]>();
-    for (const r of data?.items ?? []) {
-      if (!r.total_minutes || r.total_minutes <= 0) continue;
-      const list = byDay.get(r.date) ?? [];
-      list.push(r.total_minutes / 60);
-      byDay.set(r.date, list);
-    }
-    return Array.from({ length: 7 }, (_, i) => {
-      const day = addDays(from, i);
-      const hours = byDay.get(isoDay(day));
-      const avg = hours && hours.length ? hours.reduce((a, b) => a + b, 0) / hours.length : 0;
-      return { label: format(day, "EEE d"), hours: Math.round(avg * 10) / 10 };
-    });
-  }, [data, from]);
+  const series = useMemo(
+    () =>
+      (data?.days ?? []).map((d) => ({
+        label: format(parseISO(d.date), "EEE d") + (!d.is_working_day && !d.extra_day ? " (off)" : ""),
+        hours: Math.min(24, Math.round(d.hours * 10) / 10),
+        extra: d.extra_day,
+      })),
+    [data],
+  );
 
   const hasData = series.some((p) => p.hours > 0);
+  const pct = data && data.target_hours > 0 ? Math.min(100, (data.total_hours / data.target_hours) * 100) : 0;
 
   return (
     <Card className={className}>
       <CardHeader
-        title="Avg Work Hours"
-        subtitle="Employee weekly average work hours"
+        title={team ? "Avg Work Hours" : "My Work Hours"}
+        subtitle={team ? "Employee weekly average work hours" : "Your work hours this week"}
         action={
-          <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3 text-sm font-medium text-[hsl(var(--foreground-subtle))] shadow-[var(--shadow-xs)]">
-            <CalendarDays size={16} className="text-[hsl(var(--gray-400))]" aria-hidden />
-            {format(from, "d MMM yyyy")} - {format(to, "d MMM yyyy")}
-          </span>
+          data ? (
+            <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-[hsl(var(--border-strong))] bg-[hsl(var(--card))] px-3 text-sm font-medium text-[hsl(var(--foreground-subtle))] shadow-[var(--shadow-xs)]">
+              <CalendarDays size={16} className="text-[hsl(var(--gray-400))]" aria-hidden />
+              {format(parseISO(data.week_start), "d MMM yyyy")} - {format(parseISO(data.week_end), "d MMM yyyy")}
+            </span>
+          ) : undefined
         }
       />
       {isLoading ? (
@@ -334,7 +365,7 @@ function AvgWorkHours({ from, to, className }: { from: Date; to: Date; className
                 tickLine={false} axisLine={false} width={48}
                 tick={{ fill: "currentColor", fontSize: 12 }}
                 tickFormatter={(v: number) => `${v}h`}
-                domain={[0, (max: number) => Math.max(8, Math.ceil(max))]}
+                domain={[0, (max: number) => Math.min(24, Math.max(8, Math.ceil(max)))]}
               />
               <Tooltip
                 cursor={{ stroke: C.orange, strokeOpacity: 0.3 }}
@@ -343,8 +374,11 @@ function AvgWorkHours({ from, to, className }: { from: Date; to: Date; className
                     <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-3 py-2 shadow-[var(--shadow-md)]">
                       <p className="text-xs text-[hsl(var(--foreground-muted))]">{label}</p>
                       <p className="text-sm font-semibold text-[hsl(var(--foreground))]">
-                        {Number(payload[0]?.value).toFixed(1)} h
+                        {fmtHours(Number(payload[0]?.value))}
                       </p>
+                      {(payload[0]?.payload as { extra?: boolean })?.extra && (
+                        <p className="text-xs text-[hsl(var(--warning-600))]">Extra day (off day worked)</p>
+                      )}
                     </div>
                   ) : null
                 }
@@ -356,6 +390,21 @@ function AvgWorkHours({ from, to, className }: { from: Date; to: Date; className
               />
             </AreaChart>
           </ResponsiveContainer>
+        </div>
+      )}
+      {data && (
+        <div className="mt-4">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-[hsl(var(--foreground-muted))]">
+              Weekly progress · {data.working_days} working days
+            </span>
+            <span className="font-semibold text-[hsl(var(--foreground))]">
+              {fmtHours(data.total_hours)} / {fmtHours(data.target_hours)}
+            </span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-[hsl(var(--secondary))]">
+            <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: C.orange }} />
+          </div>
         </div>
       )}
     </Card>
@@ -645,6 +694,7 @@ export default function DashboardPage() {
         hint={attendanceRate !== null ? `${attendanceRate}% attendance rate` : undefined}
         icon={UserCheck} tone="green" isLoading={statsLoading} />
     ),
+    v.attendanceOrgView && <AbsentTodayCard key="absent" />,
     v.leaveOrgView && (
       <StatCard key="leave" label="On Leave" value={stats?.on_leave_today ?? 0}
         icon={Clock} tone="orange" isLoading={statsLoading} />
@@ -667,11 +717,11 @@ export default function DashboardPage() {
   const quickActions = [
     v.employeesCreate && (
       <QuickAction key="add-employee" label="Add Employee" description="Onboard a new team member"
-        icon={Users} href="/employees?new=1" />
+        icon={Users} href="/employees/new" />
     ),
     v.payrollProcess && (
       <QuickAction key="process-payroll" label="Process Payroll" description="Run payroll for this month"
-        icon={TrendingUp} href="/payroll" />
+        icon={TrendingUp} href="/payroll/new" />
     ),
     v.attendanceOrgView && (
       <QuickAction key="view-attendance" label="Team Attendance" description="Today's attendance report"
@@ -679,26 +729,22 @@ export default function DashboardPage() {
     ),
     v.assetsAssign && (
       <QuickAction key="assign-asset" label="Assign Asset" description="Allocate equipment to employee"
-        icon={Package} href="/assets" />
+        icon={Package} href="/assets/assign" />
     ),
     <QuickAction key="my-attendance" label="My Attendance" description="View your check-in history"
       icon={CalendarDays} href="/attendance" />,
     <QuickAction key="apply-leave" label="Apply for Leave" description="Request time off"
-      icon={Plane} href="/leave" />,
+      icon={Plane} href="/leave/new" />,
     <QuickAction key="my-payslips" label="My Payslips" description="View your salary history"
-      icon={Wallet} href="/payroll" />,
+      icon={Wallet} href="/payroll/my" />,
     <QuickAction key="raise-ticket" label="Raise a Ticket" description="Get IT or HR support"
-      icon={LifeBuoy} href="/helpdesk" />,
+      icon={LifeBuoy} href="/helpdesk/new" />,
   ].filter(Boolean);
 
   const statusLabel = !activeSession ? "Not checked in" : activeSession.status === "on_break" ? "On break" : "Checked in";
   const statusTime = activeSession
     ? new Date(activeSession.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : null;
-
-  // Last 7 days ending today, same window for the chart and its label.
-  const to = useMemo(() => new Date(), []);
-  const from = useMemo(() => addDays(to, -6), [to]);
 
   const showWorkHours = v.attendanceOwn;
   const showWorkType = v.employeesView;
@@ -741,7 +787,7 @@ export default function DashboardPage() {
 
       {(showWorkHours || showWorkType) && (
         <div className={cn("grid grid-cols-1 gap-4", rowTwoCols)}>
-          {showWorkHours && <AvgWorkHours from={from} to={to} className={showWorkType ? "lg:col-span-2" : undefined} />}
+          {showWorkHours && <AvgWorkHours team={v.attendanceOrgView} className={showWorkType ? "lg:col-span-2" : undefined} />}
           {showWorkType && <WorkTypeStats />}
         </div>
       )}
