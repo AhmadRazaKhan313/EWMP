@@ -68,7 +68,7 @@ async def _require_upload_access(db, tenant_id, user, employee_id) -> None:
 async def upload_document(
     employee_id: UUID,
     document_type: DocumentType = Form(...),
-    title: str = Form(...),
+    title: str | None = Form(None),
     expiry_date: date | None = Form(None),
     notes: str | None = Form(None),
     file: UploadFile = File(...),

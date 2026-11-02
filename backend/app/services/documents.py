@@ -14,7 +14,7 @@ from datetime import date
 import filetype
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import BadRequestError, NotFoundError, PermissionDeniedError
+from app.core.exceptions import BadRequestError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.storage import get_storage
 from app.models.documents import DocumentType, EmployeeDocument
 from app.repositories.documents import EmployeeDocumentRepository
@@ -70,7 +70,7 @@ class EmployeeDocumentService:
         *,
         employee_id: uuid.UUID,
         document_type: DocumentType,
-        title: str,
+        title: str | None,
         file_name: str,
         mime_type: str,  # noqa: ARG002 — client-declared, kept for signature compatibility but never trusted; see _sniff_mime_type below
         content: bytes,
@@ -79,6 +79,15 @@ class EmployeeDocumentService:
         uploaded_by_id: uuid.UUID,
     ) -> EmployeeDocument:
         await self._get_employee_or_raise(employee_id)
+
+        # The title only has to be typed for "Other"; every other type is
+        # already described by its type, so it defaults to the type's name.
+        title = (title or "").strip()
+        if document_type == DocumentType.OTHER:
+            if not title:
+                raise ValidationError('A title is required when the document type is "Other"')
+        elif not title:
+            title = document_type.value.replace("_", " ").title()
 
         if not content:
             raise BadRequestError("Uploaded file is empty")

@@ -56,6 +56,8 @@ class FakeDB:
         self.owner_id = owner_id
         self.flushes = 0
         self.session_revocations = 0
+        self.added = []  # rows added via db.add (status history)
+        self._pending = []
 
     async def execute(self, stmt):
         sql = str(stmt).lower()
@@ -69,10 +71,20 @@ class FakeDB:
             return _Result(None)
         if sql.startswith("update users"):
             return _Result(None)
+        if "from employee_contracts" in sql:  # offboarding ends the active contract
+            return _Result(None)
         raise AssertionError(f"unexpected query: {sql[:80]}")
 
+    def add(self, obj):
+        self.added.append(obj)
+        self._pending.append(obj)
+
     async def flush(self):
-        self.flushes += 1
+        # A flush that only writes status-history rows is not a write to the user.
+        only_history = bool(self._pending) and all(type(o).__name__ == "EmployeeStatusHistory" for o in self._pending)
+        self._pending = []
+        if not only_history:
+            self.flushes += 1
 
 
 class FakeRepo:

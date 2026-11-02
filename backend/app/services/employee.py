@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError
+from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.security import generate_password_reset_token, hash_password
 from app.models.attendance import Shift
 from app.models.employee import Employee, EmploymentStatus, JobNature
@@ -24,6 +24,7 @@ from app.models.rbac import Role
 from app.models.user import User
 from app.permissions.role_guards import assert_can_assign_role, assert_can_remove_roles
 from app.services.auth import new_email_verification_fields, queue_verification_email
+from app.services.employee_history import record_status_change
 from app.repositories.employee import EmployeeRepository
 from app.repositories.user import UserRepository
 from app.schemas.employee import (
@@ -40,6 +41,51 @@ from app.schemas.employee import (
 # a label on the Employee row and the linked User stayed fully active, so a
 # terminated employee could still sign in, clock in and read payslips.
 _EXITED_STATUSES = (EmploymentStatus.TERMINATED, EmploymentStatus.RESIGNED)
+OFFBOARD_REASON_TYPES = ("resignation", "termination", "end_of_contract", "retirement", "other")
+
+
+# Profile fields that go straight onto the Employee row on create. Anything the
+# form sends but this list leaves out used to be dropped without an error
+# (nationality, blood group and the emergency contact were all lost on "Add").
+_PROFILE_FIELDS = (
+    "marital_status", "nationality", "blood_group",
+    "father_name", "mother_name", "spouse_name",
+    "personal_email", "personal_phone", "address", "permanent_address",
+    "national_id", "passport_number", "passport_expiry",
+    "bank_name", "bank_account_title", "bank_account_number", "bank_iban",
+    "health_insurance_provider", "health_insurance_number",
+    "emergency_contacts", "education", "work_experience", "compensation_items",
+    "driving_license_number", "driving_license_expiry", "dependents", "skills",
+    "languages", "certifications", "date_of_confirmation", "probation_end_date",
+    "notice_period_days",
+    "national_id_type", "tax_number", "social_security_number", "provident_fund_number",
+    "visa_number", "visa_expiry", "religion", "place_of_birth", "home_phone",
+    "previous_employee_id", "referral_source", "hobbies", "tshirt_size", "social_links",
+)
+
+
+def _profile_payload(data) -> dict:
+    payload = {k: getattr(data, k) for k in _PROFILE_FIELDS if getattr(data, k, None) is not None}
+    contacts = payload.get("emergency_contacts")
+    if contacts:
+        payload["emergency_contact"] = contacts[0]
+    return payload
+
+
+def _sync_emergency_contacts(update_data: dict) -> None:
+    """Keep the legacy single `emergency_contact` and the new list in step.
+
+    The list is the source of truth; the single column mirrors its first entry.
+    A client that only knows the old field (an older desktop build, say) still
+    works: its one contact becomes a one-entry list.
+    """
+    if "emergency_contacts" in update_data:
+        contacts = update_data["emergency_contacts"] or []
+        update_data["emergency_contacts"] = contacts
+        update_data["emergency_contact"] = contacts[0] if contacts else None
+    elif "emergency_contact" in update_data:
+        contact = update_data["emergency_contact"]
+        update_data["emergency_contacts"] = [contact] if contact and contact.get("name") else []
 
 
 class EmployeeService:
@@ -185,6 +231,7 @@ class EmployeeService:
             "is_remote": data.is_remote,
             "current_salary": data.current_salary,
             "currency": data.currency,
+            **_profile_payload(data),
         }
 
         max_attempts = 3
@@ -217,6 +264,11 @@ class EmployeeService:
         if temporary_password is not None:
             queue_verification_email(user.email, user.email_verification_token)
 
+        await record_status_change(
+            self.db, self.tenant_id, employee.id, from_status=None,
+            to_status=employee.employment_status, changed_by_id=created_by_id,
+            effective_date=data.date_of_joining, source="created",
+        )
         return employee, temporary_password
 
     async def _require_shift(self, shift_id: uuid.UUID) -> None:
@@ -272,6 +324,7 @@ class EmployeeService:
         update_data = data.model_dump(exclude_unset=True, exclude_none=False)
         if not update_data:
             return employee
+        _sync_emergency_contacts(update_data)
 
         # Exit-status transition (checked before anything is written).
         new_status = update_data.get("employment_status")
@@ -329,7 +382,13 @@ class EmployeeService:
         if not update_data:
             return await self.repo.get_or_raise(employee_id)
 
+        _old_status = employee.employment_status
         updated = await self.repo.update(employee_id, update_data)
+        if new_status is not None:
+            await record_status_change(
+                self.db, self.tenant_id, employee_id, from_status=_old_status, to_status=new_status,
+                changed_by_id=updated_by_id, reason=update_data.get("exit_reason"), source="update",
+            )
         if crosses_exit_boundary:
             # Terminated/resigned -> login off. Rehired -> login back on.
             await self._set_login_active(employee, active=not will_be_exited)
@@ -446,6 +505,8 @@ class EmployeeService:
         date_of_leaving: date,
         exit_reason: str,
         offboarded_by_id: uuid.UUID,
+        *,
+        reason_type: str = "termination",
     ) -> Employee:
         """
         Trigger offboarding: set status, record exit date and reason.
@@ -456,14 +517,34 @@ class EmployeeService:
         if employee.employment_status in _EXITED_STATUSES:
             raise ConflictError("Employee is already offboarded")
 
+        if reason_type not in OFFBOARD_REASON_TYPES:
+            raise ValidationError(
+                "reason_type must be one of: " + ", ".join(OFFBOARD_REASON_TYPES)
+            )
+        if not (exit_reason or "").strip():
+            raise ValidationError("An exit reason is required.")
         await self._guard_can_disable_login(employee, offboarded_by_id)
 
+        # A resignation is the employee's decision; everything else is the company's.
+        exit_status = (
+            EmploymentStatus.RESIGNED if reason_type == "resignation" else EmploymentStatus.TERMINATED
+        )
+        previous_status = employee.employment_status
         updated = await self.repo.update(employee_id, {
-            "employment_status": EmploymentStatus.TERMINATED,
+            "employment_status": exit_status,
             "date_of_leaving": date_of_leaving,
             "exit_reason": exit_reason,
         })
         await self._set_login_active(employee, False)
+        await record_status_change(
+            self.db, self.tenant_id, employee_id, from_status=previous_status, to_status=exit_status,
+            changed_by_id=offboarded_by_id, reason=f"{reason_type}: {exit_reason.strip()}",
+            effective_date=date_of_leaving, source="offboard",
+        )
+        # Leaving ends their contract too, so no renewal reminder fires for an ex-employee.
+        from app.services.employee_contracts import EmployeeContractService
+
+        await EmployeeContractService(self.db, self.tenant_id).end_active_for_employee(employee_id)
 
         # Trigger offboarding workflow via Celery
         try:
