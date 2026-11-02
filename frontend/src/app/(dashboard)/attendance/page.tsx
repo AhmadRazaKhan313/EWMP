@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
 import { CalendarDays, UserCheck, UserX, Coffee, Hourglass, Sun } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -9,6 +9,8 @@ import { DataTable } from "@/components/molecules/DataTable";
 import { Badge, Card, EmptyState, PageHeader } from "@/components/atoms";
 import { useAuthStore } from "@/store/auth.store";
 import { CheckInWidget } from "./CheckInWidget";
+import { AttendanceStatusBadge } from "@/components/attendance/AttendanceStatusBadge";
+import { AttendanceCorrectionDialog } from "@/components/attendance/AttendanceCorrectionDialog";
 
 interface MyWorkSession {
   id: string;
@@ -131,6 +133,7 @@ interface DailyRow {
   late_minutes: number | null;
   overtime_minutes: number | null;
   is_regularized: boolean;
+  record_id: string | null;
   detail: string | null;
 }
 
@@ -186,7 +189,14 @@ function formatDuration(minutes: number | null) {
   return `${h}h ${m}m`;
 }
 
-const columns: ColumnDef<DailyRow, unknown>[] = [
+// `canFor` says whether the signed-in user may correct that row; when nothing
+// can be corrected the Actions column is left out entirely.
+function buildColumns(
+  onCorrect: (row: DailyRow) => void,
+  canFor: (row: DailyRow) => boolean,
+  anyAccess: boolean,
+): ColumnDef<DailyRow, unknown>[] {
+const base: ColumnDef<DailyRow, unknown>[] = [
   {
     header: "Employee",
     accessorKey: "employee_name",
@@ -222,7 +232,12 @@ const columns: ColumnDef<DailyRow, unknown>[] = [
       const cfg = statusConfig[row.original.status] ?? { label: row.original.status, variant: "default" as const };
       return (
         <span title={row.original.detail ?? undefined}>
-          <Badge variant={cfg.variant}>{cfg.label}</Badge>
+          {row.original.status === "absent" ? <AttendanceStatusBadge status="absent" /> : <Badge variant={cfg.variant}>{cfg.label}</Badge>}
+          {row.original.is_regularized && (
+            <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--foreground-muted))]">
+              Corrected
+            </span>
+          )}
         </span>
       );
     },
@@ -267,6 +282,26 @@ const columns: ColumnDef<DailyRow, unknown>[] = [
     },
   },
 ];
+if (!anyAccess) return base;
+return [
+  ...base,
+  {
+    id: "actions",
+    header: "",
+    cell: ({ row }) =>
+      canFor(row.original) ? (
+        <button
+          type="button"
+          onClick={() => onCorrect(row.original)}
+          aria-label={`${row.original.record_id ? "Correct" : "Mark"} attendance for ${row.original.employee_name}`}
+          className="rounded-md border border-[hsl(var(--border))] px-2.5 py-1 text-xs font-medium hover:bg-[hsl(var(--muted))]"
+        >
+          {row.original.record_id ? "Edit" : "Mark"}
+        </button>
+      ) : null,
+  },
+];
+}
 
 function SummaryCard({
   icon: Icon, label, value, hint, color, active, onClick,
@@ -302,6 +337,16 @@ export default function AttendancePage() {
   const [search, setSearch] = useState("");
   const [pageIndex, setPageIndex] = useState(0);
   const hasEmployeeProfile = useAuthStore((s) => s.user?.has_employee_profile);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  // Editing / deleting a recorded day needs attendance.edit; marking a day that has
+  // no record needs attendance.regularize (the server enforces the same).
+  const canEdit = hasPermission("attendance.edit");
+  const canMark = hasPermission("attendance.regularize");
+  const [correcting, setCorrecting] = useState<DailyRow | null>(null);
+  const columns = useMemo(
+    () => buildColumns(setCorrecting, (r) => (r.record_id ? canEdit : canMark), canEdit || canMark),
+    [canEdit, canMark],
+  );
 
   const statuses = FILTERS.find((f) => f.key === filter)?.statuses ?? "";
 
@@ -414,6 +459,14 @@ export default function AttendancePage() {
           />
         }
       />
+
+      {correcting && (data?.date || selectedDate) && (
+        <AttendanceCorrectionDialog
+          row={correcting}
+          date={(selectedDate ?? data?.date) as string}
+          onClose={() => setCorrecting(null)}
+        />
+      )}
     </div>
   );
 }

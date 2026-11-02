@@ -13,6 +13,12 @@ import {
 } from "@/services/attendanceSession.service";
 import { Card } from "@/components/atoms";
 
+function formatWorked(totalMinutes: number): string {
+  const h = Math.floor(totalMinutes / 60);
+  const m = Math.round(totalMinutes % 60);
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
 function formatElapsed(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
@@ -73,7 +79,11 @@ export function CheckInWidget() {
     mutationFn: () => apiClient.post("/attendance/check-out", {}),
     onSuccess: (res) => {
       const ot = res.data?.overtime_minutes ?? 0;
-      toast.success(ot > 0 ? `Checked out — ${ot}m overtime` : "Checked out");
+      const total = Number(res.data?.total_minutes ?? 0);
+      const parts: string[] = [];
+      if (total > 0) parts.push(`${formatWorked(total)} worked`);
+      if (ot > 0) parts.push(`${ot}m overtime`);
+      toast.success(parts.length ? `Checked out — ${parts.join(" · ")}` : "Checked out");
       void qc.invalidateQueries({ queryKey: ["attendance"] });
       void qc.invalidateQueries({ queryKey: ["work-session"] });
     },
