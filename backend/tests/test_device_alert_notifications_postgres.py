@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 
 import pytest
+from tests._device_factory import make_device
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +15,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _enroll(client, org, host):
-    r = await client.post("/api/v1/devices/enroll", json={
-        "enrollment_token": create_device_enrollment_token(str(org["org"])), "hostname": host})
-    return r.json()
+    return await make_device(org, host)
 
 
 async def _upload(client, token):

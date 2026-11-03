@@ -161,69 +161,6 @@ class HeartbeatRequest(BaseModel):
 
 
 # ── Enrollment ───────────────────────────────────────────────────────────────
-@router.get("/enrollment-token", summary="Generate a device enrollment token for this org")
-async def get_enrollment_token(
-    current_user: User = Depends(require_permission("devices.enroll")),
-    tenant_id: UUID = Depends(get_tenant_id),
-) -> dict:
-    """
-    Paste the returned token into the agent's config once during install
-    (see agent/README.md). It's org-scoped and long-lived — rotate it by
-    calling this again and re-configuring agents if it's ever compromised.
-    It is NOT a per-device credential; POST /devices/enroll exchanges it
-    for a real per-device agent token, which is what agents use afterward.
-    """
-    token = create_device_enrollment_token(str(tenant_id))
-    return {"enrollment_token": token, "expires_in_days": 365}
-
-
-@router.post("/enroll", summary="Agent self-enrollment (called once by the desktop agent)")
-async def enroll_device(
-    body: EnrollRequest,
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """No user auth here — the enrollment_token itself is the credential, since
-    the agent runs unattended with no human logged into EWMP."""
-    try:
-        payload = verify_device_enrollment_token(body.enrollment_token)
-    except (JWTError, ValueError):
-        raise HTTPException(status_code=401, detail="Invalid or expired enrollment token")
-    tenant_id = payload["tenant_id"]
-
-    import uuid as _uuid
-    import hashlib
-
-    device = Device(
-        tenant_id=tenant_id,
-        hostname=body.hostname,
-        device_name=body.hostname,
-        agent_id=str(_uuid.uuid4()),
-        agent_version=body.agent_version,
-        agent_token_hash="",  # set below once we know the token
-        os_type=body.os_type,
-        os_name=body.os_name,
-        os_version=body.os_version,
-        cpu_model=body.cpu_model,
-        cpu_cores=body.cpu_cores,
-        ram_total_gb=body.ram_total_gb,
-        disk_total_gb=body.disk_total_gb,
-        mac_address=body.mac_address,
-        status=DeviceStatus.ONLINE,
-        last_seen_at=datetime.now(timezone.utc),
-        last_heartbeat_at=datetime.now(timezone.utc),
-        is_enrolled=True,
-    )
-    db.add(device)
-    await db.flush()  # need device.id before minting its token
-
-    agent_token = create_agent_token(str(device.id))
-    device.agent_token_hash = hashlib.sha256(agent_token.encode()).hexdigest()
-    device.next_agent_token_hash = None  # a (re-)enrollment replaces every earlier token
-    await db.flush()
-
-    return {"device_id": str(device.id), "agent_token": agent_token}
-
-
 @router.post(
     "/self-enroll",
     summary="Employee self-enrollment (called by desktop-app on login, no admin token needed)",
@@ -235,11 +172,8 @@ async def self_enroll_device(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """
-    Companion to POST /enroll (the unattended agent path, gated by an
-    admin-issued enrollment_token). This path is for desktop-app: the
-    employee is already logged in with a normal access token, so that
-    token itself is the credential — no separate enrollment_token to
-    generate, copy, and paste.
+    The only way a device is added: the desktop app calls this after the
+    employee signs in, so their normal access token is the credential.
 
     Idempotent per (tenant, employee, hostname): a device already
     registered for this employee/hostname pair is updated and re-issued

@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token, create_device_enrollment_token, hash_password
+from tests._device_factory import make_device
 from app.main import app
 from app.models.organization import Organization
 from app.models.user import User
@@ -132,11 +133,7 @@ def _bearer(tok) -> dict:
 
 
 async def _enroll(client, org) -> dict:
-    r = await client.post("/api/v1/devices/enroll", json={
-        "enrollment_token": create_device_enrollment_token(str(org["org"])),
-        "hostname": f"pc-{uuid.uuid4().hex[:6]}"})
-    assert r.status_code == 200, r.text
-    return r.json()
+    return await make_device(org)
 
 
 async def _heartbeat(client, tok):

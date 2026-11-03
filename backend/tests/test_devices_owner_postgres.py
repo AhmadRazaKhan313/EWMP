@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.core.database import get_db
 from app.core.security import create_access_token, create_device_enrollment_token, hash_password
 from app.main import app
+from tests._device_factory import make_device
 from app.models.employee import Employee
 from app.models.organization import Organization
 from app.models.organization_structure import Department, Designation
@@ -101,10 +102,7 @@ def _h(org):
 
 
 async def _device(client, org, host) -> str:
-    r = await client.post("/api/v1/devices/enroll", json={
-        "enrollment_token": create_device_enrollment_token(str(org["org"])), "hostname": host})
-    assert r.status_code == 200, r.text
-    return r.json()["device_id"]
+    return (await make_device(org, host))["device_id"]
 
 
 async def test_list_shows_the_person_who_holds_each_device(client, org):
