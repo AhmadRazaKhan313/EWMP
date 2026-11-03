@@ -67,7 +67,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       return;
     }
     try {
-      const me = await getMe();
+      const me = await getMeWhenReachable();
       set({
         status: "authenticated",
         user: {
@@ -90,6 +90,31 @@ export const useAuthStore = create<AuthState>((set) => ({
     set((state) => (state.user ? { user: { ...state.user, must_change_password: false } } : {}));
   },
 }));
+
+/** How long to wait before asking the server again when it could not be reached. */
+const RESTORE_RETRY_MS = 15_000;
+
+/** The request never got an answer (offline / server unreachable) — as opposed to a rejection. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isNetworkError(err: any): boolean {
+  return Boolean(err?.isAxiosError) && !err.response;
+}
+
+/**
+ * Right after the computer starts the network is often not up yet. The saved session is
+ * still good, so wait and ask again rather than showing the login screen (which would
+ * leave this device offline until someone typed a password). A real rejection throws.
+ */
+async function getMeWhenReachable(): ReturnType<typeof getMe> {
+  for (;;) {
+    try {
+      return await getMe();
+    } catch (err) {
+      if (!isNetworkError(err)) throw err;
+      await new Promise((r) => setTimeout(r, RESTORE_RETRY_MS));
+    }
+  }
+}
 
 // FastAPI/Pydantic validation errors (422) return `detail` as an ARRAY of
 // {loc, msg, type} objects, not a string — assigning that straight into

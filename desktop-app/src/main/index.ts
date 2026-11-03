@@ -27,6 +27,7 @@ import {
   type WidgetWindowLike,
 } from "./widgetWindow";
 import { getTrayIcon } from "./trayIcons";
+import { loginItemOptions, shouldStartHidden } from "./autoStart";
 import type { TrayIconStatus } from "@shared/deviceTypes";
 
 // ── Single instance lock ─────────────────────────────────────────────────────
@@ -37,6 +38,9 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 }
+
+// Started by the OS at sign-in (or with --hidden): stay in the tray, no big window.
+const startedHidden = shouldStartHidden(process.argv, app.getLoginItemSettings().wasOpenedAtLogin);
 
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
@@ -95,7 +99,7 @@ function createWindow(): BrowserWindow {
   });
 
   window.on("ready-to-show", () => {
-    window.show();
+    if (!startedHidden) window.show();
   });
 
   // Minimize-to-tray, not quit (Phase 8 builds this out fully) — the timer
@@ -262,6 +266,10 @@ app.on("second-instance", () => {
 });
 
 app.whenReady().then(() => {
+  // Device management only works while the app runs, so start with the computer.
+  const loginItem = loginItemOptions(app.isPackaged, process.platform);
+  if (loginItem) app.setLoginItemSettings(loginItem);
+
   // ── IPC handlers ────────────────────────────────────────────────────────
   // Only these specific, narrow operations are reachable from the
   // renderer — never a generic "run this Node code" channel.
