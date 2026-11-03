@@ -44,3 +44,51 @@ if (typeof window !== "undefined") {
     },
   };
 }
+
+// ── ewmp: fill-in stubs (adds only what is missing) ──────────────────────────
+if (typeof window !== "undefined") {
+  if (typeof window.matchMedia !== "function") {
+    Object.defineProperty(window, "matchMedia", {
+      writable: true,
+      value: (query: string): MediaQueryList =>
+        ({
+          matches: false,
+          media: query,
+          onchange: null,
+          addListener: () => undefined,
+          removeListener: () => undefined,
+          addEventListener: () => undefined,
+          removeEventListener: () => undefined,
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList,
+    });
+  }
+
+  const noop = async (): Promise<void> => undefined;
+  const defaults: Record<string, Record<string, unknown>> = {
+    app: { getVersion: async (): Promise<string> => "0.0.0-test" },
+    secureStore: {
+      get: async (key: string): Promise<string | null> => (key === "deviceConsentAcknowledged" ? "true" : null),
+      set: noop,
+      delete: noop,
+      clear: noop,
+    },
+    window: { hide: noop },
+    tray: { setStatus: noop, setTooltip: noop, setBadgeCount: noop },
+    device: {
+      getHardwareInfo: async (): Promise<Record<string, unknown>> => ({
+        hostname: "test-host", os_type: "other", os_name: "test", os_version: "0",
+        cpu_model: "test-cpu", cpu_cores: 4, ram_total_gb: 8, mac_address: "00:00:00:00:00:00",
+        agent_version: "0.0.0-test",
+      }),
+      captureScreenshot: async (): Promise<Record<string, unknown>> => ({ base64Png: "", width: 0, height: 0 }),
+    },
+    activity: { start: noop, stop: noop, setWatchlist: noop, drainAlerts: async (): Promise<unknown[]> => [] },
+    widget: { toggle: async (): Promise<boolean> => true, hide: noop, isVisible: async (): Promise<boolean> => false },
+  };
+  const w = window as unknown as { ewmp?: Record<string, Record<string, unknown>> };
+  w.ewmp = w.ewmp ?? {};
+  for (const [group, fns] of Object.entries(defaults)) {
+    w.ewmp[group] = { ...fns, ...(w.ewmp[group] ?? {}) };
+  }
+}
