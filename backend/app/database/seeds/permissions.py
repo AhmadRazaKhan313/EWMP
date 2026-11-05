@@ -35,6 +35,13 @@ PERMISSION_REGISTRY: list[dict] = [
     {"resource": "shifts",     "action": "manage",      "label": "Manage Shifts",             "category": "Attendance",         "is_sensitive": False},
     {"resource": "holidays",   "action": "manage",      "label": "Manage Holidays",           "category": "Attendance",         "is_sensitive": False},
 
+    # ── Finance ───────────────────────────────────────────────────
+    {"resource": "finance", "action": "view",   "label": "View Finance",            "category": "Finance", "is_sensitive": True},
+    {"resource": "finance", "action": "manage", "label": "Manage Chart of Accounts & Rates", "category": "Finance", "is_sensitive": True},
+    {"resource": "finance", "action": "post",   "label": "Post Journal Entries",    "category": "Finance", "is_sensitive": True},
+    {"resource": "finance", "action": "void",   "label": "Void Journal Entries",    "category": "Finance", "is_sensitive": True},
+    {"resource": "finance", "action": "export", "label": "Export Finance Data",     "category": "Finance", "is_sensitive": True},
+
     # ── Leave ─────────────────────────────────────────────────────
     {"resource": "leave", "action": "view",          "label": "View Leave Requests",       "category": "Leave Management",   "is_sensitive": False},
     {"resource": "leave", "action": "apply",         "label": "Apply for Leave",           "category": "Leave Management",   "is_sensitive": False},

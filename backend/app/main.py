@@ -92,8 +92,11 @@ def _register_routers(app: FastAPI) -> None:
     from app.api.v1.webhooks.router import router as webhooks_router
     from app.api.v1.notifications.router import router as notifications_router
 
+    from app.api.v1.finance.router import router as finance_router
+
     prefix = settings.API_V1_PREFIX
     for r in [
+        finance_router,
         auth_router, onboarding_router, admin_setup_router, organization_router,
         employees_router, employee_documents_router, roles_router, departments_router, branches_router,
         teams_router, designations_router, shifts_router, holidays_router,
