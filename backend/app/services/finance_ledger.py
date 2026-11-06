@@ -24,16 +24,20 @@ from app.models.organization import Organization
 CENT = Decimal("0.01")
 
 # (code, name, type, parent_code)
+DEFAULT_MONEY_KIND = {"1010": "cash", "1020": "bank", "1030": "wallet"}
+
 DEFAULT_CHART: list[tuple[str, str, AccountType, str | None]] = [
     ("1000", "Assets", AccountType.ASSET, None),
     ("1010", "Cash", AccountType.ASSET, "1000"),
     ("1020", "Bank", AccountType.ASSET, "1000"),
     ("1030", "Mobile Wallet", AccountType.ASSET, "1000"),
     ("1100", "Accounts Receivable", AccountType.ASSET, "1000"),
+    ("1200", "Input Tax Receivable", AccountType.ASSET, "1000"),
     ("1500", "Fixed Assets", AccountType.ASSET, "1000"),
     ("2000", "Liabilities", AccountType.LIABILITY, None),
     ("2010", "Accounts Payable", AccountType.LIABILITY, "2000"),
     ("2100", "Loans", AccountType.LIABILITY, "2000"),
+    ("2200", "Tax Payable", AccountType.LIABILITY, "2000"),
     ("3000", "Equity", AccountType.EQUITY, None),
     ("3010", "Founders Capital", AccountType.EQUITY, "3000"),
     ("3900", "Retained Earnings", AccountType.EQUITY, "3000"),
@@ -50,6 +54,7 @@ DEFAULT_CHART: list[tuple[str, str, AccountType, str | None]] = [
     ("5060", "Gadgets", AccountType.EXPENSE, "5000"),
     ("5070", "Gifts", AccountType.EXPENSE, "5000"),
     ("5900", "Other Expenses", AccountType.EXPENSE, "5000"),
+    ("5950", "Exchange Gain / Loss", AccountType.EXPENSE, "5000"),
 ]
 
 
@@ -61,6 +66,9 @@ class LineIn:
     currency: str | None = None  # default: org base currency
     rate: Decimal | None = None  # base units per 1 unit of currency; looked up if omitted
     description: str | None = None
+    # Exact base-currency amount, when the caller has already worked it out (keeps multi-currency
+    # documents balanced to the cent). Overrides amount * rate.
+    base_amount: Decimal | None = None
 
 
 def _q(v: Decimal) -> Decimal:
@@ -87,7 +95,8 @@ async def ensure_chart(db: AsyncSession, tenant_id: uuid.UUID) -> int:
             continue
         parent = existing.get(parent_code) if parent_code else None
         acc = FinAccount(tenant_id=tenant_id, code=code, name=name, type=typ,
-                         parent_id=parent.id if parent else None, is_system=True)
+                         parent_id=parent.id if parent else None, is_system=True,
+                         money_kind=DEFAULT_MONEY_KIND.get(code))
         db.add(acc)
         await db.flush()
         existing[code] = acc
@@ -154,7 +163,10 @@ async def post_entry(
         if amount <= 0:
             raise UnprocessableError(f"Line {i}: amount must be greater than zero")
         cur = (ln.currency or base).upper()
-        if cur == base:
+        if ln.base_amount is not None:
+            rate = Decimal(ln.rate) if ln.rate is not None else (
+                Decimal("1") if cur == base else (_q(ln.base_amount) / amount).quantize(Decimal("0.00000001")))
+        elif cur == base:
             rate = Decimal("1")
         elif ln.rate is not None:
             rate = Decimal(ln.rate)
@@ -162,7 +174,7 @@ async def post_entry(
                 raise UnprocessableError(f"Line {i}: rate must be greater than zero")
         else:
             rate = await _rate_for(db, tenant_id, cur, entry_date)
-        base_amt = _q(amount * rate)
+        base_amt = _q(ln.base_amount) if ln.base_amount is not None else _q(amount * rate)
         if base_amt <= 0:
             raise UnprocessableError(f"Line {i}: amount is too small after conversion")
         dr, cr = (base_amt, Decimal("0")) if ln.side == "debit" else (Decimal("0"), base_amt)
@@ -257,3 +269,33 @@ async def trial_balance(db: AsyncSession, tenant_id: uuid.UUID, as_of: date | No
                     "debit": str(dr), "credit": str(cr), "balance": str(dr - cr)})
     return {"accounts": out, "total_debit": str(tot_dr), "total_credit": str(tot_cr),
             "balanced": tot_dr == tot_cr, "as_of": as_of.isoformat() if as_of else None}
+
+
+# (first, last, step) code ranges handed out to accounts created without a code.
+CODE_RANGES = {
+    AccountType.ASSET: (1040, 1099, 1), AccountType.LIABILITY: (2110, 2890, 10),
+    AccountType.EQUITY: (3020, 3890, 10), AccountType.INCOME: (4030, 4890, 10),
+    AccountType.EXPENSE: (5080, 5890, 10),
+}
+ROOT_CODES = {AccountType.ASSET: "1000", AccountType.LIABILITY: "2000", AccountType.EQUITY: "3000",
+              AccountType.INCOME: "4000", AccountType.EXPENSE: "5000"}
+
+
+def account_kind(a: FinAccount) -> str | None:
+    """cash | bank | wallet for money accounts (explicit, else the default accounts by code), else None."""
+    return a.money_kind or DEFAULT_MONEY_KIND.get(a.code)
+
+
+async def next_code(db: AsyncSession, tenant_id: uuid.UUID, type: AccountType) -> str:
+    used = set((await db.execute(select(FinAccount.code).where(FinAccount.tenant_id == tenant_id))).scalars().all())
+    first, last, step = CODE_RANGES[type]
+    for c in range(first, last + 1, step):
+        if str(c) not in used:
+            return str(c)
+    raise UnprocessableError("No free account codes left in this range; add the account with an explicit code")
+
+
+async def root_account(db: AsyncSession, tenant_id: uuid.UUID, type: AccountType) -> FinAccount | None:
+    return (await db.execute(select(FinAccount).where(
+        FinAccount.tenant_id == tenant_id, FinAccount.code == ROOT_CODES[type], FinAccount.is_deleted == False  # noqa: E712
+    ))).scalar_one_or_none()

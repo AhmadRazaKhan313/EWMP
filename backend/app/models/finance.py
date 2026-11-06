@@ -55,6 +55,7 @@ class FinAccount(TenantModel):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    money_kind: Mapped[str | None] = mapped_column(String(10), nullable=True)  # cash | bank | wallet (asset accounts)
 
 
 class FinJournalEntry(TenantModel):
@@ -75,6 +76,9 @@ class FinJournalEntry(TenantModel):
     reverses_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("fin_journal_entries.id", ondelete="SET NULL"), nullable=True)
     reversed_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("fin_journal_entries.id", ondelete="SET NULL"), nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    payment_provider: Mapped[str | None] = mapped_column(String(100), nullable=True)   # bank / wallet name
+    payment_account_no: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    payment_tid: Mapped[str | None] = mapped_column(String(100), nullable=True)        # transaction id
 
 
 class FinJournalLine(TenantModel):
@@ -119,3 +123,12 @@ class FinTaxRate(TenantModel):
     kind: Mapped[str] = mapped_column(String(30), nullable=False, default="sales", server_default="sales")
     account_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("fin_accounts.id", ondelete="SET NULL"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+
+
+class FinPaymentProvider(TenantModel):
+    """Banks / mobile wallets this organization added beyond the built-in list."""
+    __tablename__ = "fin_payment_providers"
+    __table_args__ = (UniqueConstraint("tenant_id", "kind", "name", name="uq_fin_providers_tenant_kind_name"),)
+
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)   # bank | wallet
+    name: Mapped[str] = mapped_column(String(100), nullable=False)

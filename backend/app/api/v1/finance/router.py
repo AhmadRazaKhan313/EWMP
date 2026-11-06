@@ -1,5 +1,6 @@
 """Finance API (Phase 0): chart of accounts, journal, trial balance, rates, tax rates."""
 import datetime
+from typing import Literal
 import uuid
 from decimal import Decimal
 
@@ -16,22 +17,32 @@ from app.permissions.dependencies import get_tenant_id, require_permission
 from app.services import finance_ledger as ledger
 
 router = APIRouter(prefix="/finance", tags=["Finance"])
+from app.api.v1.finance.transactions import router as _txn_router  # noqa: E402
+router.include_router(_txn_router)
+from app.api.v1.finance.sales import router as _sales_router  # noqa: E402
+router.include_router(_sales_router)
+from app.api.v1.finance.purchases import router as _purchases_router  # noqa: E402
+router.include_router(_purchases_router)
+from app.api.v1.finance.reports import router as _reports_router  # noqa: E402
+router.include_router(_reports_router)
 
 
 # ── schemas ──────────────────────────────────────────────────────
 class AccountCreate(BaseModel):
-    code: str = Field(min_length=1, max_length=20)
+    code: str | None = Field(None, min_length=1, max_length=20)  # omitted = next free code
     name: str = Field(min_length=1, max_length=150)
     type: AccountType
     parent_id: uuid.UUID | None = None
     currency: str | None = Field(None, min_length=3, max_length=3)
     description: str | None = None
+    money_kind: Literal["cash", "bank", "wallet"] | None = None  # only for asset (money) accounts
 
 
 class AccountUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=150)
     parent_id: uuid.UUID | None = None
     is_active: bool | None = None
+    money_kind: Literal["cash", "bank", "wallet"] | None = None
     description: str | None = None
 
 
@@ -73,7 +84,8 @@ class TaxBody(BaseModel):
 def _acc(a: FinAccount) -> dict:
     return {"id": str(a.id), "code": a.code, "name": a.name, "type": a.type.value,
             "parent_id": str(a.parent_id) if a.parent_id else None, "is_system": a.is_system,
-            "is_active": a.is_active, "currency": a.currency, "description": a.description}
+            "is_active": a.is_active, "currency": a.currency, "description": a.description,
+            "money_kind": ledger.account_kind(a)}
 
 
 def _entry(e: FinJournalEntry, lines=None) -> dict:
@@ -121,16 +133,23 @@ async def list_accounts(type: AccountType | None = None, include_inactive: bool 
 @router.post("/accounts", status_code=status.HTTP_201_CREATED, summary="Add an account")
 async def create_account(body: AccountCreate, user: User = Depends(require_permission("finance.manage")),
                          tenant_id: uuid.UUID = Depends(get_tenant_id), db: AsyncSession = Depends(get_db)) -> dict:
+    code, parent_id = body.code, body.parent_id
+    if code is None:
+        code = await ledger.next_code(db, tenant_id, body.type)
+        if parent_id is None:
+            root = await ledger.root_account(db, tenant_id, body.type)
+            parent_id = root.id if root else None
     dup = (await db.execute(select(FinAccount.id).where(
-        FinAccount.tenant_id == tenant_id, FinAccount.code == body.code))).first()
+        FinAccount.tenant_id == tenant_id, FinAccount.code == code))).first()
     if dup:
-        raise ConflictError(f"Account code {body.code} already exists")
-    if body.parent_id:
-        parent = await _get_account(db, tenant_id, body.parent_id)
+        raise ConflictError(f"Account code {code} already exists")
+    if parent_id:
+        parent = await _get_account(db, tenant_id, parent_id)
         if parent.type != body.type:
             raise ConflictError("Parent account must be of the same type")
-    a = FinAccount(tenant_id=tenant_id, code=body.code, name=body.name, type=body.type, parent_id=body.parent_id,
-                   currency=body.currency.upper() if body.currency else None, description=body.description)
+    a = FinAccount(tenant_id=tenant_id, code=code, name=body.name, type=body.type, parent_id=parent_id,
+                   currency=body.currency.upper() if body.currency else None, description=body.description,
+                   money_kind=body.money_kind if body.type == AccountType.ASSET else None)
     db.add(a)
     await db.flush()
     return _acc(a)

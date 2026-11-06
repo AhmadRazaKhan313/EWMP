@@ -24,6 +24,7 @@ celery_app = Celery(
         "app.workers.tasks.attendance",
         "app.workers.tasks.auth_sessions",
         "app.workers.tasks.onboarding",
+        "app.workers.tasks.finance",
         "app.workers.tasks.contracts",
     ],
 )
@@ -49,6 +50,10 @@ celery_app.conf.update(
 # reasonably fast, without hammering the DB with an UPDATE sweep every
 # few seconds.
 celery_app.conf.beat_schedule = {
+    "finance-daily-sweep": {
+        "task": "finance.daily_sweep",
+        "schedule": 86400,
+    },
     "mark-stale-devices-offline": {
         "task": "device_health.mark_stale_devices_offline",
         "schedule": settings.DEVICE_HEARTBEAT_INTERVAL_SECONDS * 3,

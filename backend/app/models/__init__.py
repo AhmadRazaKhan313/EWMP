@@ -16,3 +16,5 @@ from app.models.helpdesk import SupportTicket  # noqa: F401
 from app.models.onboarding import OnboardingTemplate, OnboardingTemplateTask, Offer, OnboardingCase, OnboardingCaseTask, OnboardingCaseDocument  # noqa: F401
 from app.models.break_policy import BreakPolicy, BreakOverride, BreakUnlockRequest  # noqa: F401
 from app.models.finance import FinAccount, FinJournalEntry, FinJournalLine, FinExchangeRate, FinTaxRate  # noqa: F401
+from app.models.finance_sales import FinCustomer, FinInvoice, FinInvoiceLine, FinPayment, FinPaymentAllocation  # noqa: F401
+from app.models.finance_purchases import FinVendor, FinBill, FinBillLine, FinBillPayment, FinBillPaymentAllocation  # noqa: F401

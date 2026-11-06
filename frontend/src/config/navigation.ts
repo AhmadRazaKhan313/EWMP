@@ -12,7 +12,7 @@
 import {
   BarChart3, Bot, Briefcase, Building2, CalendarDays, Clock, CreditCard, DollarSign,
   Headphones, LayoutDashboard, MapPin, Monitor, Package, Plane, Settings, Shield,
-  Store, TrendingUp, UserPlus, UserSearch, Users, Workflow, type LucideIcon,
+  Receipt, ShoppingCart, Store, TrendingUp, UserPlus, UserSearch, Users, Wallet, Workflow, type LucideIcon,
 } from "lucide-react";
 
 export interface NavItem {
@@ -118,6 +118,10 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "Operations",
     items: [
       { label: "Payroll",    href: "/payroll",    icon: DollarSign, permission: "payroll.view" },
+      { label: "Finance",    href: "/finance",    icon: Wallet,     permission: "finance.view" },
+      { label: "Sales",      href: "/finance/sales", icon: Receipt, permission: "finance.view" },
+      { label: "Purchases",  href: "/finance/purchases", icon: ShoppingCart, permission: "finance.view" },
+      { label: "Finance Reports", href: "/finance/reports", icon: BarChart3, permission: "finance.view" },
       { label: "Onboarding", href: "/onboarding", icon: UserPlus,
         anyPermission: ["onboarding.view", "onboarding.view_own", "offers.manage", "offers.approve"] },
       {
