@@ -12,11 +12,12 @@ from app.core.exceptions import UnprocessableError
 from app.models.user import User
 from app.permissions.dependencies import get_tenant_id, require_permission
 from app.services import finance_reports as rep
+from app.services import finance_taxes as taxes
 
 router = APIRouter(prefix="/reports")
 _view = require_permission("finance.view")
 _export = require_permission("finance.export")
-ReportName = Literal["profit-loss", "balance-sheet", "trial-balance", "receivables-aging", "payables-aging", "general-ledger"]
+ReportName = Literal["profit-loss", "balance-sheet", "trial-balance", "receivables-aging", "payables-aging", "general-ledger", "taxes"]
 
 
 def _year_start() -> datetime.date:
@@ -67,6 +68,8 @@ async def export(report: ReportName, format: Literal["xlsx", "csv"] = "xlsx", da
         d = await rep.receivables_aging(db, tenant_id)
     elif report == "payables-aging":
         d = await rep.payables_aging(db, tenant_id)
+    elif report == "taxes":
+        d = await taxes.tax_report(db, tenant_id, date_from or datetime.date(today.year, today.month, 1), date_to or today)
     else:
         if account_id is None:
             raise UnprocessableError("Pick an account for the general ledger")

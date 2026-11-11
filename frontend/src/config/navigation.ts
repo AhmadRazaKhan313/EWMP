@@ -9,10 +9,10 @@
  * To move a page between the sidebar and Settings -> Management, move its
  * entry between NAV_SECTIONS and MANAGEMENT_GROUPS below. Nothing else changes.
  */
-import {
+import { Percent, Lock, Landmark,
   BarChart3, Bot, Briefcase, Building2, CalendarDays, Clock, CreditCard, DollarSign,
   Headphones, LayoutDashboard, MapPin, Monitor, Package, Plane, Settings, Shield,
-  Receipt, ShoppingCart, Store, TrendingUp, UserPlus, UserSearch, Users, Wallet, Workflow, type LucideIcon,
+  PiggyBank, Receipt, ShoppingCart, Store, TrendingUp, UserPlus, UserSearch, Users, Wallet, Workflow, type LucideIcon,
 } from "lucide-react";
 
 export interface NavItem {
@@ -122,6 +122,10 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Sales",      href: "/finance/sales", icon: Receipt, permission: "finance.view" },
       { label: "Purchases",  href: "/finance/purchases", icon: ShoppingCart, permission: "finance.view" },
       { label: "Finance Reports", href: "/finance/reports", icon: BarChart3, permission: "finance.view" },
+      { label: "Budget", href: "/finance/budget", icon: PiggyBank, permission: "finance.view" },
+      { label: "Banking", href: "/finance/banking", icon: Landmark, permission: "finance.view" },
+      { label: "Taxes", href: "/finance/taxes", icon: Percent, permission: "finance.view" },
+      { label: "Close books", href: "/finance/close", icon: Lock, permission: "finance.view" },
       { label: "Onboarding", href: "/onboarding", icon: UserPlus,
         anyPermission: ["onboarding.view", "onboarding.view_own", "offers.manage", "offers.approve"] },
       {

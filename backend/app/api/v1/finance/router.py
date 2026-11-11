@@ -25,6 +25,12 @@ from app.api.v1.finance.purchases import router as _purchases_router  # noqa: E4
 router.include_router(_purchases_router)
 from app.api.v1.finance.reports import router as _reports_router  # noqa: E402
 router.include_router(_reports_router)
+from app.api.v1.finance.budget import router as _budget_router  # noqa: E402
+router.include_router(_budget_router)
+from app.api.v1.finance.banking import router as _banking_router  # noqa: E402
+router.include_router(_banking_router)
+from app.api.v1.finance.close import router as _close_router  # noqa: E402
+router.include_router(_close_router)
 
 
 # ── schemas ──────────────────────────────────────────────────────

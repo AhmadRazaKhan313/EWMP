@@ -15,10 +15,11 @@ from decimal import ROUND_HALF_UP, Decimal
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFoundError, UnprocessableError
+from app.core.exceptions import ConflictError, NotFoundError, UnprocessableError
 from app.models.finance import (
     AccountType, EntryStatus, FinAccount, FinExchangeRate, FinJournalEntry, FinJournalLine,
 )
+from app.models.finance_close import FinPeriodClose
 from app.models.organization import Organization
 
 CENT = Decimal("0.01")
@@ -40,6 +41,7 @@ DEFAULT_CHART: list[tuple[str, str, AccountType, str | None]] = [
     ("2200", "Tax Payable", AccountType.LIABILITY, "2000"),
     ("3000", "Equity", AccountType.EQUITY, None),
     ("3010", "Founders Capital", AccountType.EQUITY, "3000"),
+    ("3020", "Opening Balance Equity", AccountType.EQUITY, "3000"),
     ("3900", "Retained Earnings", AccountType.EQUITY, "3000"),
     ("4000", "Income", AccountType.INCOME, None),
     ("4010", "Client Payments", AccountType.INCOME, "4000"),
@@ -126,6 +128,20 @@ async def _rate_for(db: AsyncSession, tenant_id: uuid.UUID, currency: str, on: d
     return Decimal(row)
 
 
+async def locked_through(db: AsyncSession, tenant_id: uuid.UUID) -> date | None:
+    """Books are closed through this date (inclusive), or None when nothing is closed."""
+    return (await db.execute(
+        select(func.max(FinPeriodClose.period_end)).where(
+            FinPeriodClose.tenant_id == tenant_id, FinPeriodClose.is_deleted == False)  # noqa: E712
+    )).scalar_one_or_none()
+
+
+async def assert_open(db: AsyncSession, tenant_id: uuid.UUID, on: date) -> None:
+    locked = await locked_through(db, tenant_id)
+    if locked is not None and on <= locked:
+        raise ConflictError(f"Books are closed through {locked.isoformat()}. Pick a later date or reopen the period.")
+
+
 async def post_entry(
     db: AsyncSession,
     tenant_id: uuid.UUID,
@@ -140,6 +156,7 @@ async def post_entry(
 ) -> FinJournalEntry:
     if len(lines) < 2:
         raise UnprocessableError("A journal entry needs at least two lines")
+    await assert_open(db, tenant_id, entry_date)
 
     base = await base_currency(db, tenant_id)
     ids = {ln.account_id for ln in lines}
@@ -220,6 +237,7 @@ async def void_entry(
     entry, lines = await get_entry(db, tenant_id, entry_id)
     if entry.status != EntryStatus.POSTED or entry.reverses_id is not None:
         raise UnprocessableError("Only a posted, original entry can be voided")
+    await assert_open(db, tenant_id, on or entry.entry_date)
 
     rev = FinJournalEntry(
         tenant_id=tenant_id, number=await _next_number(db, tenant_id), entry_date=on or entry.entry_date,

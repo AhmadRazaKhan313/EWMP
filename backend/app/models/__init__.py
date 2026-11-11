@@ -18,3 +18,6 @@ from app.models.break_policy import BreakPolicy, BreakOverride, BreakUnlockReque
 from app.models.finance import FinAccount, FinJournalEntry, FinJournalLine, FinExchangeRate, FinTaxRate  # noqa: F401
 from app.models.finance_sales import FinCustomer, FinInvoice, FinInvoiceLine, FinPayment, FinPaymentAllocation  # noqa: F401
 from app.models.finance_purchases import FinVendor, FinBill, FinBillLine, FinBillPayment, FinBillPaymentAllocation  # noqa: F401
+from app.models.finance_budget import FinBudgetPlan, FinBudgetOpening  # noqa: F401
+from app.models.finance_banking import FinBankStatement, FinBankLine, FinBankReconciliation  # noqa: F401
+from app.models.finance_close import FinPeriodClose  # noqa: F401

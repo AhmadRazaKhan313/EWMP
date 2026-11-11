@@ -72,6 +72,12 @@ async def _drop_org(engine, ids):
     async with AsyncSession(engine) as s:
         o = {"o": ids["org"]}
         for sql in (
+            "DELETE FROM fin_period_closes WHERE tenant_id = :o",
+            "DELETE FROM fin_bank_lines WHERE tenant_id = :o",
+            "DELETE FROM fin_bank_statements WHERE tenant_id = :o",
+            "DELETE FROM fin_bank_reconciliations WHERE tenant_id = :o",
+            "DELETE FROM fin_budget_plans WHERE tenant_id = :o",
+            "DELETE FROM fin_budget_openings WHERE tenant_id = :o",
             "DELETE FROM fin_quote_lines WHERE tenant_id = :o",
             "DELETE FROM fin_quotes WHERE tenant_id = :o",
             "DELETE FROM fin_purchase_order_lines WHERE tenant_id = :o",

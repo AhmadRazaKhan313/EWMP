@@ -277,6 +277,14 @@ def to_table(report: str, d: dict) -> tuple[str, list[list]]:
         rows += [[r["date"], r["number"], r["memo"] or r["description"] or "", r["reference"] or "", _num(r["debit"]), _num(r["credit"]), _num(r["balance"])] for r in d["lines"]]
         rows.append(["", "", "Closing balance", "", _num(d["total_debit"]), _num(d["total_credit"]), _num(d["closing_balance"])])
         return "General Ledger", rows
+    if report == "taxes":
+        rows = [[f"Tax report  {d['date_from']} to {d['date_to']}  ({cur})"], ["", "Rate", "Percent", "Taxable amount", "Tax", "Documents"]]
+        for title, sec in (("Sales (output tax, invoices)", d["sales"]), ("Purchases (input tax, bills)", d["purchases"])):
+            rows.append([title])
+            rows += [["", r["name"], r["percent"], _num(r["taxable"]), _num(r["tax"]), r["documents"]] for r in sec["rows"]]
+            rows.append(["", "Total", "", _num(sec["taxable"]), _num(sec["tax"]), ""])
+        rows.append(["", "Net tax payable (output - input)", "", "", _num(d["net_tax_payable"]), ""])
+        return "Tax Report", rows
     raise UnprocessableError("Unknown report")
 
 

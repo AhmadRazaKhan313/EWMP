@@ -1,6 +1,4 @@
 # ── Secrets — NEVER commit these ─────────────────────────────────────────
-.env
-.env.*
 !.env.example
 *.pem
 *.key
@@ -63,7 +61,6 @@ desktop-app/.electron-vite/
 # ── OS / Editor junk ────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-.vscode/
 .idea/
 *.log
 
@@ -83,3 +80,4 @@ backend/diag_absent.py
 /scripts/
 /commit_groups.py
 # (commit_groups.py)
+config.bat
